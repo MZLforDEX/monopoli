@@ -417,6 +417,7 @@ const Board3D = {
   populateTiles(propertiesData) {
     if (!propertiesData || propertiesData.length === 0) return;
 
+    this.propertiesData = propertiesData;
     while (this.tilesGroup.children.length > 0) {
       this.tilesGroup.remove(this.tilesGroup.children[0]);
     }
@@ -430,6 +431,25 @@ const Board3D = {
       this.tilesGroup.add(tileMesh);
       this.tileMeshes[index] = tileMesh;
     });
+
+    if (typeof NusantaraLandmarks !== 'undefined' && typeof NusantaraLandmarks.preloadPhotos === 'function') {
+      NusantaraLandmarks.preloadPhotos((tileId) => this.refreshTileTexture(tileId));
+    }
+  },
+
+  refreshTileTexture(tileIndex) {
+    const tileGroup = this.tileMeshes[tileIndex];
+    const tileData = this.propertiesData && this.propertiesData[tileIndex];
+    const coord = this.tileCoords && this.tileCoords[tileIndex];
+    if (!tileGroup || !tileGroup.mainMesh || !tileData || !coord) return;
+
+    const topMat = tileGroup.mainMesh.material[2];
+    if (!topMat) return;
+    if (topMat.map) topMat.map.dispose();
+
+    const tileCanvas = this.generateTileTexture(tileData, coord);
+    topMat.map = this.createCrispTexture(tileCanvas);
+    topMat.needsUpdate = true;
   },
 
   createTileMesh(tileData, coord, index) {
@@ -458,6 +478,7 @@ const Board3D = {
     mesh.receiveShadow = true;
     mesh.castShadow = false;
     tileGroup.add(mesh);
+    tileGroup.mainMesh = mesh;
 
     // Selection / Hover Glow Frame
     const frameGeo = new THREE.BoxGeometry(w * 0.995, h + 0.025, d * 0.995);
@@ -600,7 +621,7 @@ const Board3D = {
       ctx.textBaseline = 'middle';
       this.drawFittedText(
         ctx,
-        `Rp${tile.price.toLocaleString('id-ID')}rb`,
+        formatRupiah(tile.price),
         cw / 2,
         pillY + pillH / 2 + 1,
         pillW - 20,
@@ -613,7 +634,7 @@ const Board3D = {
     } else if (isCorner) {
       // Corner Tiles (START, Penjara, Parkir Bebas, Ke Penjara)
       const cornerMeta = {
-        'start':        { title: 'START',        sub: 'GAJI +Rp2.000rb', color: '#10b981' },
+        'start':        { title: 'START',        sub: 'GAJI +Rp 2jt', color: '#10b981' },
         'jail-visit':   { title: 'PENJARA',      sub: 'KUNJUNGAN',       color: '#f97316' },
         'free-parking': { title: 'PARKIR BEBAS', sub: 'ZONA AMAN',       color: '#38bdf8' },
         'go-to-jail':   { title: 'KE PENJARA',   sub: 'DITAHAN',         color: '#ef4444' }
@@ -692,7 +713,7 @@ const Board3D = {
 
       // Bottom Price or Action Pill
       const bottomText = tile.price
-        ? `Rp${tile.price.toLocaleString('id-ID')}rb`
+        ? formatRupiah(tile.price)
         : (tile.type === 'chance' ? 'AMBIL KARTU' : 'DANA UMUM');
 
       const pillW = cw - 64;
@@ -1128,7 +1149,7 @@ const Board3D = {
     return offsets[myIndex % offsets.length];
   },
 
-  animatePlayerMove3D(playerId, fromPos, toPos, players, onStepCallback) {
+  animatePlayerMove3D(playerId, fromPos, toPos, players, onStepCallback, stepDelta = 1) {
     return new Promise((resolve) => {
       const pData = this.playerTokens.get(playerId);
       if (!pData) {
@@ -1140,8 +1161,9 @@ const Board3D = {
       const steps = [];
       let pos = fromPos;
       let guard = 0;
+      const dirStep = stepDelta < 0 ? -1 : 1;
       while (pos !== toPos && guard < 42) {
-        pos = (pos + 1) % 40;
+        pos = (pos + dirStep + 40) % 40;
         steps.push(pos);
         guard++;
       }

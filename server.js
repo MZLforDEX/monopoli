@@ -133,6 +133,8 @@ function processBotTurn(roomCode) {
 
     const dice = rules.rollDice();
     activeRoom.lastDice = dice;
+    activeRoom.escapedJailByDouble = false;
+    const wasInJail = currentBot.inJail;
 
     if (currentBot.inJail) {
       const decision = Bot.decide(currentBot, 'jail', {});
@@ -145,11 +147,12 @@ function processBotTurn(roomCode) {
         currentBot.money -= 500;
         currentBot.inJail = false;
         currentBot.jailTurns = 0;
-        broadcastLog(roomCode, `🤖 ${currentBot.name} membayar Rp500rb untuk keluar penjara`);
+        broadcastLog(roomCode, `🤖 ${currentBot.name} membayar ${rules.formatRupiah(500)} untuk keluar penjara`);
       } else if (dice.isDouble) {
         currentBot.inJail = false;
         currentBot.jailTurns = 0;
-        broadcastLog(roomCode, `🤖 ${currentBot.name} melempar double dan keluar penjara!`);
+        activeRoom.escapedJailByDouble = true;
+        broadcastLog(roomCode, `🤖 ${currentBot.name} melempar double (${dice.d1}+${dice.d2}) dan bebas dari penjara!`);
       } else {
         currentBot.jailTurns++;
         if (currentBot.jailTurns >= 3) {
@@ -157,7 +160,7 @@ function processBotTurn(roomCode) {
             currentBot.money -= 500;
             currentBot.inJail = false;
             currentBot.jailTurns = 0;
-            broadcastLog(roomCode, `🤖 ${currentBot.name} wajib membayar Rp500rb keluar penjara`);
+            broadcastLog(roomCode, `🤖 ${currentBot.name} wajib membayar ${rules.formatRupiah(500)} keluar penjara`);
           } else {
             activeRoom.bankruptPlayer(currentBot.id);
             broadcastLog(roomCode, `💀 ${currentBot.name} bangkrut karena tidak sanggup keluar penjara!`);
@@ -176,7 +179,7 @@ function processBotTurn(roomCode) {
       }
     }
 
-    if (dice.isDouble) {
+    if (dice.isDouble && !(wasInJail && activeRoom.escapedJailByDouble)) {
       currentBot.doublesCount++;
       if (currentBot.doublesCount >= 3) {
         activeRoom.sendToJail(currentBot.id);
@@ -192,7 +195,7 @@ function processBotTurn(roomCode) {
     io.to(roomCode).emit('dice-result', { playerId: currentBot.id, dice, moveResult });
 
     if (moveResult.passedStart) {
-      broadcastLog(roomCode, `🤖 ${currentBot.name} melewati START, terima Rp2.000rb`);
+      broadcastLog(roomCode, `🤖 ${currentBot.name} melewati START, terima ${rules.formatRupiah(2000)}`);
     }
 
     const space = properties[currentBot.position];
@@ -207,6 +210,12 @@ function processBotTurn(roomCode) {
       }
 
       handleLanding(roomCode, currentBot.id, dice.total);
+      if (r.turnPhase === 'auction') {
+        broadcastRoomState(roomCode);
+        r.botThinking = false;
+        return;
+      }
+
       tryBotBuildBuildings(roomCode, currentBot);
       broadcastRoomState(roomCode);
 
@@ -215,7 +224,7 @@ function processBotTurn(roomCode) {
         return;
       }
 
-      if (dice.isDouble && !currentBot.bankrupt && !currentBot.inJail) {
+      if (dice.isDouble && !currentBot.bankrupt && !currentBot.inJail && !r.escapedJailByDouble) {
         r.botThinking = false;
         setTimeout(() => processBotTurn(roomCode), 900);
       } else {
@@ -230,7 +239,7 @@ function updateTurnPhaseAfterResolution(room, player) {
   if (!room || !player) return;
   if (player.bankrupt || player.inJail) {
     room.turnPhase = 'end';
-  } else if (room.lastDice && room.lastDice.isDouble) {
+  } else if (room.lastDice && room.lastDice.isDouble && !room.escapedJailByDouble) {
     room.turnPhase = 'roll';
   } else {
     room.turnPhase = 'end';
@@ -253,11 +262,24 @@ function handleLanding(roomCode, playerId, diceTotal) {
         if (player.isBot) {
           const shouldBuy = Bot.decide(player, 'buy-property', { price: space.price });
           if (shouldBuy && room.buyProperty(playerId, player.position)) {
-            broadcastLog(roomCode, `🤖 ${player.name} membeli ${space.name} seharga Rp${space.price.toLocaleString('id-ID')}rb`);
+            broadcastLog(roomCode, `🤖 ${player.name} membeli ${space.name} seharga ${rules.formatRupiah(space.price)}`);
+            updateTurnPhaseAfterResolution(room, player);
           } else {
-            broadcastLog(roomCode, `🤖 ${player.name} melewati pembelian ${space.name}`);
+            const hasHumanBidder = [...room.players.values()].some(p => !p.isBot && !p.bankrupt && p.money >= 100);
+            if (hasHumanBidder) {
+              broadcastLog(roomCode, `🔨 ${player.name} tidak membeli ${space.name}, lelang dimulai!`);
+              room.startAuction(player.position);
+              io.to(roomCode).emit('auction-start', {
+                propertyId: player.position,
+                space,
+                auctionState: room.getState().auctionState
+              });
+              setTimeout(() => handleBotAuction(roomCode), 800);
+            } else {
+              broadcastLog(roomCode, `🤖 ${player.name} melewati pembelian ${space.name}`);
+              updateTurnPhaseAfterResolution(room, player);
+            }
           }
-          updateTurnPhaseAfterResolution(room, player);
         } else {
           room.turnPhase = 'buying';
           io.to(roomCode).emit('buy-option', {
@@ -274,7 +296,7 @@ function handleLanding(roomCode, playerId, diceTotal) {
           const owner = room.players.get(state.ownerId);
           const rent = room.payRent(playerId, player.position, diceTotal);
           if (rent > 0 && owner) {
-            broadcastLog(roomCode, `💸 ${player.name} membayar sewa Rp${rent.toLocaleString('id-ID')}rb ke ${owner.name} (${space.name})`);
+            broadcastLog(roomCode, `💸 ${player.name} membayar sewa ${rules.formatRupiah(rent)} ke ${owner.name} (${space.name})`);
             if (player.bankrupt) {
               broadcastLog(roomCode, `💀 ${player.name} bangkrut!`);
               io.to(roomCode).emit('player-bankrupt', { playerId });
@@ -295,7 +317,7 @@ function handleLanding(roomCode, playerId, diceTotal) {
         io.to(roomCode).emit('player-bankrupt', { playerId });
       } else {
         player.money -= amount;
-        broadcastLog(roomCode, `🏛️ ${player.name} membayar ${space.name} Rp${amount.toLocaleString('id-ID')}rb`);
+        broadcastLog(roomCode, `🏛️ ${player.name} membayar ${space.name} ${rules.formatRupiah(amount)}`);
       }
       updateTurnPhaseAfterResolution(room, player);
       break;
@@ -331,7 +353,7 @@ function executeCard(roomCode, playerId, card, diceTotal) {
     case 'move': {
       const moveRes = room.movePlayerTo(playerId, card.value);
       if (moveRes.passedStart) {
-        broadcastLog(roomCode, `${player.name} melewati START, terima Rp2.000rb`);
+        broadcastLog(roomCode, `${player.name} melewati START, terima ${rules.formatRupiah(2000)}`);
       }
       handleLanding(roomCode, playerId, diceTotal);
       break;
@@ -348,7 +370,7 @@ function executeCard(roomCode, playerId, card, diceTotal) {
       do { pos = (pos + 1) % 40; } while (properties[pos].type !== targetType);
       const moveRes = room.movePlayerTo(playerId, pos);
       if (moveRes.passedStart) {
-        broadcastLog(roomCode, `${player.name} melewati START, terima Rp2.000rb`);
+        broadcastLog(roomCode, `${player.name} melewati START, terima ${rules.formatRupiah(2000)}`);
       }
       handleLanding(roomCode, playerId, diceTotal);
       break;
@@ -384,7 +406,7 @@ function executeCard(roomCode, playerId, card, diceTotal) {
         else cost += s.houses * card.value[0];
       });
       if (cost > 0) {
-        broadcastLog(roomCode, `🛠️ ${player.name} membayar biaya renovasi Rp${cost.toLocaleString('id-ID')}rb`);
+        broadcastLog(roomCode, `🛠️ ${player.name} membayar biaya renovasi ${rules.formatRupiah(cost)}`);
       }
       if (player.money < cost) {
         room.bankruptPlayer(playerId);
@@ -551,11 +573,14 @@ io.on('connection', (socket) => {
 
     const dice = rules.rollDice();
     room.lastDice = dice;
+    room.escapedJailByDouble = false;
+    const wasInJail = current.inJail;
 
     if (current.inJail) {
       if (dice.isDouble) {
         current.inJail = false;
         current.jailTurns = 0;
+        room.escapedJailByDouble = true;
         broadcastLog(code, `🔓 ${current.name} melempar double (${dice.d1}+${dice.d2}) dan bebas dari penjara!`);
       } else {
         current.jailTurns++;
@@ -564,7 +589,7 @@ io.on('connection', (socket) => {
             current.money -= 500;
             current.inJail = false;
             current.jailTurns = 0;
-            broadcastLog(code, `🔓 ${current.name} membayar denda wajib Rp500rb untuk keluar penjara`);
+            broadcastLog(code, `🔓 ${current.name} membayar denda wajib ${rules.formatRupiah(500)} untuk keluar penjara`);
           } else {
             room.bankruptPlayer(current.id);
             broadcastLog(code, `💀 ${current.name} bangkrut karena tidak sanggup membayar denda penjara!`);
@@ -583,7 +608,7 @@ io.on('connection', (socket) => {
       }
     }
 
-    if (dice.isDouble) {
+    if (dice.isDouble && !(wasInJail && room.escapedJailByDouble)) {
       current.doublesCount++;
       if (current.doublesCount >= 3) {
         room.sendToJail(current.id);
@@ -602,7 +627,7 @@ io.on('connection', (socket) => {
     io.to(code).emit('dice-result', { playerId: current.id, dice, moveResult });
 
     if (moveResult.passedStart) {
-      broadcastLog(code, `🏁 ${current.name} melewati START, terima Rp2.000rb!`);
+      broadcastLog(code, `🏁 ${current.name} melewati START, terima ${rules.formatRupiah(2000)}!`);
     }
     broadcastLog(code, `🎲 ${current.name} melempar ${dice.d1}+${dice.d2}=${dice.total}, mendarat di ${space.name}`);
 
@@ -626,7 +651,7 @@ io.on('connection', (socket) => {
 
     const space = properties[current.position];
     if (buy && room.buyProperty(socket.id, current.position)) {
-      broadcastLog(code, `🏠 ${current.name} membeli ${space.name} seharga Rp${space.price.toLocaleString('id-ID')}rb`);
+      broadcastLog(code, `🏠 ${current.name} membeli ${space.name} seharga ${rules.formatRupiah(space.price)}`);
       updateTurnPhaseAfterResolution(room, current);
       broadcastRoomState(code);
     } else {
@@ -649,7 +674,7 @@ io.on('connection', (socket) => {
     const numericAmount = Number(amount);
     if (room.placeBid(socket.id, numericAmount)) {
       const player = room.players.get(socket.id);
-      broadcastLog(code, `🔨 ${player.name} menawar Rp${numericAmount.toLocaleString('id-ID')}rb`);
+      broadcastLog(code, `🔨 ${player.name} menawar ${rules.formatRupiah(numericAmount)}`);
 
       if (room.isAuctionComplete()) {
         finishAuctionAndNotify(code);
@@ -707,7 +732,7 @@ io.on('connection', (socket) => {
     if (!room) return;
     const refund = room.sellBuilding(socket.id, propertyId);
     if (refund) {
-      broadcastLog(code, `💰 ${room.players.get(socket.id).name} menjual bangunan di ${properties[propertyId].name} (+Rp${refund}rb)`);
+      broadcastLog(code, `💰 ${room.players.get(socket.id).name} menjual bangunan di ${properties[propertyId].name} (+${rules.formatRupiah(refund)})`);
       broadcastRoomState(code);
     }
   });
@@ -779,26 +804,28 @@ io.on('connection', (socket) => {
   socket.on('pay-jail', () => {
     const code = playerRooms.get(socket.id);
     const room = rooms.get(code);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    if (!player || !player.inJail || player.money < 500) return;
-    player.money -= 500;
-    player.inJail = false;
-    player.jailTurns = 0;
-    broadcastLog(code, `🔓 ${player.name} membayar Rp500rb untuk keluar penjara`);
+    if (!room || room.state !== 'playing' || room.turnPhase !== 'roll') return;
+    const current = room.getCurrentPlayer();
+    if (!current || current.id !== socket.id) return;
+    if (!current.inJail || current.money < 500) return;
+    current.money -= 500;
+    current.inJail = false;
+    current.jailTurns = 0;
+    broadcastLog(code, `🔓 ${current.name} membayar ${rules.formatRupiah(500)} untuk keluar penjara`);
     broadcastRoomState(code);
   });
 
   socket.on('use-jail-free', () => {
     const code = playerRooms.get(socket.id);
     const room = rooms.get(code);
-    if (!room) return;
-    const player = room.players.get(socket.id);
-    if (!player || !player.inJail || player.jailFreeCards <= 0) return;
-    player.jailFreeCards--;
-    player.inJail = false;
-    player.jailTurns = 0;
-    broadcastLog(code, `🃏 ${player.name} menggunakan Kartu Bebas Penjara!`);
+    if (!room || room.state !== 'playing' || room.turnPhase !== 'roll') return;
+    const current = room.getCurrentPlayer();
+    if (!current || current.id !== socket.id) return;
+    if (!current.inJail || current.jailFreeCards <= 0) return;
+    current.jailFreeCards--;
+    current.inJail = false;
+    current.jailTurns = 0;
+    broadcastLog(code, `🃏 ${current.name} menggunakan Kartu Bebas Penjara!`);
     broadcastRoomState(code);
   });
 
@@ -884,11 +911,23 @@ function emitAuctionEnd(roomCode, result) {
   if (result.winner) {
     const winner = room.players.get(result.winner);
     const propName = properties[result.propertyId]?.name || 'Properti';
-    broadcastLog(roomCode, `🏆 ${winner ? winner.name : 'Pemain'} memenangkan lelang ${propName} seharga Rp${result.amount.toLocaleString('id-ID')}rb!`);
+    broadcastLog(roomCode, `🏆 ${winner ? winner.name : 'Pemain'} memenangkan lelang ${propName} seharga ${rules.formatRupiah(result.amount)}!`);
   } else {
     broadcastLog(roomCode, `🔨 Lelang berakhir tanpa pemenang.`);
   }
   broadcastRoomState(roomCode);
+
+  const current = room.getCurrentPlayer();
+  if (room.state === 'playing' && current && current.isBot) {
+    tryBotBuildBuildings(roomCode, current);
+    broadcastRoomState(roomCode);
+    if (checkAndBroadcastGameOver(roomCode)) return;
+    if (room.turnPhase === 'roll') {
+      setTimeout(() => processBotTurn(roomCode), 900);
+    } else {
+      setTimeout(() => advanceToNextTurn(roomCode), 700);
+    }
+  }
 }
 
 function finishAuctionAndNotify(roomCode) {
@@ -916,7 +955,7 @@ function handleBotAuction(roomCode) {
     });
 
     if (decision.bid && room.placeBid(botId, decision.amount)) {
-      broadcastLog(roomCode, `🤖 ${bot.name} menawar Rp${decision.amount.toLocaleString('id-ID')}rb`);
+      broadcastLog(roomCode, `🤖 ${bot.name} menawar ${rules.formatRupiah(decision.amount)}`);
     } else {
       const passRes = room.passAuction(botId);
       broadcastLog(roomCode, `🤖 ${bot.name} pass lelang`);

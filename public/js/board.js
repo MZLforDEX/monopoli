@@ -111,7 +111,7 @@ function renderBoard() {
       : '';
 
     const displayName = meta.shortName || tile.name;
-    const priceDisplay = tile.price ? `<span class="tile-price mono-num">Rp${tile.price}rb</span>` : '';
+    const priceDisplay = tile.price ? `<span class="tile-price mono-num">${formatRupiah(tile.price)}</span>` : '';
 
     el.title = `${tile.name} — ${meta.title}`;
     el.innerHTML = `
@@ -192,9 +192,26 @@ function updateBuildings(boardState) {
   }
 }
 
+function getClientBuildingSupply(boardState) {
+  let housesUsed = 0;
+  let hotelsUsed = 0;
+  if (boardState) {
+    for (const st of Object.values(boardState)) {
+      if (!st) continue;
+      if (st.hotel) hotelsUsed += 1;
+      else housesUsed += st.houses || 0;
+    }
+  }
+  return {
+    housesRemaining: Math.max(0, 32 - housesUsed),
+    hotelsRemaining: Math.max(0, 12 - hotelsUsed)
+  };
+}
+
 function canClientBuildHouse(playerId, propertyId, boardState) {
   const space = boardData[propertyId];
   if (!space || space.type !== 'property') return false;
+  if (getClientBuildingSupply(boardState).housesRemaining <= 0) return false;
   const groupProps = boardData.filter(p => p.group === space.group).map(p => p.id);
   const ownsAll = groupProps.every(id => boardState[id] && boardState[id].ownerId === playerId && !boardState[id].mortgaged);
   if (!ownsAll) return false;
@@ -207,9 +224,12 @@ function canClientBuildHouse(playerId, propertyId, boardState) {
 function canClientBuildHotel(playerId, propertyId, boardState) {
   const space = boardData[propertyId];
   if (!space || space.type !== 'property') return false;
+  if (getClientBuildingSupply(boardState).hotelsRemaining <= 0) return false;
   const state = boardState[propertyId];
   if (!state || state.ownerId !== playerId || state.mortgaged || state.hotel || state.houses < 4) return false;
   const groupProps = boardData.filter(p => p.group === space.group).map(p => p.id);
+  const ownsAll = groupProps.every(id => boardState[id] && boardState[id].ownerId === playerId && !boardState[id].mortgaged);
+  if (!ownsAll) return false;
   const currentLevels = groupProps.map(id => boardState[id] ? (boardState[id].hotel ? 5 : boardState[id].houses) : 0);
   return Math.min(...currentLevels) >= 4;
 }
@@ -285,7 +305,7 @@ function showTileInfo(index, fromUserClick = false) {
     html += `
       <div class="deed-price-row">
         <span>${priceLabel}</span>
-        <strong class="mono-num">Rp${tile.price.toLocaleString('id-ID')}rb</strong>
+        <strong class="mono-num">${formatRupiah(tile.price)}</strong>
       </div>
     `;
   }
@@ -294,26 +314,26 @@ function showTileInfo(index, fromUserClick = false) {
     const activeLevel = state ? (state.hotel ? 5 : state.houses) : 0;
     html += `
       <div class="deed-rent-table">
-        <div class="rent-row ${activeLevel === 0 ? 'active-rent' : ''}"><span>Sewa Tanah</span><span class="mono-num">Rp${tile.rent}rb</span></div>
-        <div class="rent-row"><span>1 Grup Warna Lengkap</span><span class="mono-num">Rp${tile.rent * 2}rb</span></div>
-        <div class="rent-row ${activeLevel === 1 ? 'active-rent' : ''}"><span>1 Rumah</span><span class="mono-num">Rp${(tile.rent * tile.rentMultipliers[1]).toLocaleString('id-ID')}rb</span></div>
-        <div class="rent-row ${activeLevel === 2 ? 'active-rent' : ''}"><span>2 Rumah</span><span class="mono-num">Rp${(tile.rent * tile.rentMultipliers[2]).toLocaleString('id-ID')}rb</span></div>
-        <div class="rent-row ${activeLevel === 3 ? 'active-rent' : ''}"><span>3 Rumah</span><span class="mono-num">Rp${(tile.rent * tile.rentMultipliers[3]).toLocaleString('id-ID')}rb</span></div>
-        <div class="rent-row ${activeLevel === 4 ? 'active-rent' : ''}"><span>4 Rumah</span><span class="mono-num">Rp${(tile.rent * tile.rentMultipliers[4]).toLocaleString('id-ID')}rb</span></div>
-        <div class="rent-row ${activeLevel === 5 ? 'active-rent' : ''}"><span>🏨 Hotel</span><span class="mono-num">Rp${(tile.rent * tile.rentMultipliers[5]).toLocaleString('id-ID')}rb</span></div>
+        <div class="rent-row ${activeLevel === 0 ? 'active-rent' : ''}"><span>Sewa Tanah</span><span class="mono-num">${formatRupiah(tile.rent)}</span></div>
+        <div class="rent-row"><span>1 Grup Warna Lengkap</span><span class="mono-num">${formatRupiah(tile.rent * 2)}</span></div>
+        <div class="rent-row ${activeLevel === 1 ? 'active-rent' : ''}"><span>1 Rumah</span><span class="mono-num">${formatRupiah(tile.rent * tile.rentMultipliers[1])}</span></div>
+        <div class="rent-row ${activeLevel === 2 ? 'active-rent' : ''}"><span>2 Rumah</span><span class="mono-num">${formatRupiah(tile.rent * tile.rentMultipliers[2])}</span></div>
+        <div class="rent-row ${activeLevel === 3 ? 'active-rent' : ''}"><span>3 Rumah</span><span class="mono-num">${formatRupiah(tile.rent * tile.rentMultipliers[3])}</span></div>
+        <div class="rent-row ${activeLevel === 4 ? 'active-rent' : ''}"><span>4 Rumah</span><span class="mono-num">${formatRupiah(tile.rent * tile.rentMultipliers[4])}</span></div>
+        <div class="rent-row ${activeLevel === 5 ? 'active-rent' : ''}"><span>🏨 Hotel</span><span class="mono-num">${formatRupiah(tile.rent * tile.rentMultipliers[5])}</span></div>
       </div>
       <div class="deed-meta-row">
-        <span>Biaya Bangun: <strong class="mono-num">Rp${tile.houseCost}rb</strong></span>
-        <span>Gadai: <strong class="mono-num">Rp${Math.floor(tile.price / 2)}rb</strong></span>
+        <span>Biaya Bangun: <strong class="mono-num">${formatRupiah(tile.houseCost)}</strong></span>
+        <span>Gadai: <strong class="mono-num">${formatRupiah(Math.floor(tile.price / 2))}</strong></span>
       </div>
     `;
   } else if (tile.type === 'airport') {
     html += `
       <div class="deed-rent-table">
-        <div class="rent-row"><span>1 Bandara</span><span class="mono-num">Rp250rb</span></div>
-        <div class="rent-row"><span>2 Bandara</span><span class="mono-num">Rp500rb</span></div>
-        <div class="rent-row"><span>3 Bandara</span><span class="mono-num">Rp1.000rb</span></div>
-        <div class="rent-row"><span>4 Bandara</span><span class="mono-num">Rp2.000rb</span></div>
+        <div class="rent-row"><span>1 Bandara</span><span class="mono-num">${formatRupiah(250)}</span></div>
+        <div class="rent-row"><span>2 Bandara</span><span class="mono-num">${formatRupiah(500)}</span></div>
+        <div class="rent-row"><span>3 Bandara</span><span class="mono-num">${formatRupiah(1000)}</span></div>
+        <div class="rent-row"><span>4 Bandara</span><span class="mono-num">${formatRupiah(2000)}</span></div>
       </div>
     `;
   } else if (tile.type === 'utility') {
@@ -325,13 +345,13 @@ function showTileInfo(index, fromUserClick = false) {
     `;
   } else {
     const descMap = {
-      'start': 'Setiap melewati atau mendarat di START, terima gaji Rp2.000rb dari Bank.',
-      'jail-visit': 'Hanya berkunjung jika mendarat normal. Jika ditahan, bayar Rp500rb atau lempar dadu kembar.',
+      'start': 'Setiap melewati atau mendarat di START, terima gaji Rp 2jt dari Bank.',
+      'jail-visit': 'Hanya berkunjung jika mendarat normal. Jika ditahan, bayar Rp500.000 atau lempar dadu kembar.',
       'free-parking': 'Zona istirahat bebas biaya. Nikmati perjalanan mengelilingi Nusantara!',
       'go-to-jail': 'Langsung menuju petak Penjara tanpa menerima gaji START.',
       'chance': 'Ambil 1 Kartu Kesempatan dan jalankan instruksi pada kartu.',
       'community': 'Ambil 1 Kartu Dana Umum dan jalankan instruksi pada kartu.',
-      'tax': `Bayar kewajiban pajak sebesar Rp${(tile.price || 0).toLocaleString('id-ID')}rb ke Kas Negara.`
+      'tax': `Bayar kewajiban pajak sebesar ${formatRupiah(tile.price || 0)} ke Kas Negara.`
     };
     html += `<p class="deed-desc">${descMap[tile.type] || ''}</p>`;
   }
@@ -382,16 +402,16 @@ function updateActionButtons(tileIndex) {
     if (!state.mortgaged && !state.hotel && state.houses < 4) {
       const canBuild = canClientBuildHouse(window.myPlayerId, tileIndex, boardState);
       actionsEl.innerHTML += `
-        <button type="button" class="btn btn-small btn-primary" ${canBuild ? '' : 'disabled title="Miliki seluruh warna dalam grup ini & bangun secara merata"'} onclick="buildHouse(${tileIndex})">
-          🏠 Bangun Rumah (Rp${tile.houseCost}rb)
+        <button type="button" class="btn btn-small btn-primary" ${canBuild ? '' : 'disabled title="Miliki seluruh warna grup tanpa gadai, bangun merata, & pastikan stok rumah Bank tersedia"'} onclick="buildHouse(${tileIndex})">
+          🏠 Bangun Rumah (${formatRupiah(tile.houseCost)})
         </button>
       `;
     }
     if (!state.mortgaged && state.houses === 4 && !state.hotel) {
       const canHotel = canClientBuildHotel(window.myPlayerId, tileIndex, boardState);
       actionsEl.innerHTML += `
-        <button type="button" class="btn btn-small btn-primary" ${canHotel ? '' : 'disabled title="Semua kota di grup ini harus memiliki 4 rumah"'} onclick="buildHotel(${tileIndex})">
-          🏨 Bangun Hotel (Rp${tile.houseCost}rb)
+        <button type="button" class="btn btn-small btn-primary" ${canHotel ? '' : 'disabled title="Semua kota di grup ini harus memiliki 4 rumah & stok hotel Bank tersedia"'} onclick="buildHotel(${tileIndex})">
+          🏨 Bangun Hotel (${formatRupiah(tile.houseCost)})
         </button>
       `;
     }
@@ -399,17 +419,21 @@ function updateActionButtons(tileIndex) {
       const refund = Math.floor(tile.houseCost / 2);
       actionsEl.innerHTML += `
         <button type="button" class="btn btn-small btn-secondary" onclick="sellBuilding(${tileIndex})">
-          💰 Jual Bangunan (+Rp${refund}rb)
+          💰 Jual Bangunan (+${formatRupiah(refund)})
         </button>
       `;
     }
   }
 
+  const groupHasBuildings = tile.group
+    ? boardData.filter(p => p.group === tile.group).some(p => boardState[p.id] && (boardState[p.id].houses > 0 || boardState[p.id].hotel))
+    : false;
+
   if (!state.mortgaged && state.houses === 0 && !state.hotel) {
     const mortgageVal = Math.floor(tile.price / 2);
     actionsEl.innerHTML += `
-      <button type="button" class="btn btn-small btn-secondary" onclick="mortgageProperty(${tileIndex})">
-        💳 Gadai (+Rp${mortgageVal}rb)
+      <button type="button" class="btn btn-small btn-secondary" ${groupHasBuildings ? 'disabled title="Jual semua bangunan di grup warna ini sebelum menggadai"' : ''} onclick="mortgageProperty(${tileIndex})">
+        💳 Gadai (+${formatRupiah(mortgageVal)})
       </button>
     `;
   }
@@ -417,7 +441,7 @@ function updateActionButtons(tileIndex) {
     const cost = Math.floor(Math.floor(tile.price / 2) * 1.1);
     actionsEl.innerHTML += `
       <button type="button" class="btn btn-small btn-primary" onclick="unmortgageProperty(${tileIndex})">
-        🔓 Tebus Properti (Rp${cost}rb)
+        🔓 Tebus Properti (${formatRupiah(cost)})
       </button>
     `;
   }

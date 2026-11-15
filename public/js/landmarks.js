@@ -6,48 +6,50 @@
 
 const NusantaraLandmarks = {
   cache: new Map(),
+  photoCache: new Map(),
+  preloaded: false,
 
   metadata: {
     0:  { shortName: 'START',        title: 'Gapura Agung Nusantara',          sky: ['#064e3b', '#0f766e'] },
-    1:  { shortName: 'Banda Aceh',   title: 'Masjid Raya Baiturrahman',        sky: ['#1e1b4b', '#4338ca'] },
+    1:  { shortName: 'Banda Aceh',   title: 'Masjid Raya Baiturrahman',        sky: ['#1e1b4b', '#4338ca'], photo: '/images/landmarks/1.jpg' },
     2:  { shortName: 'Dana Umum',    title: 'Peti Pusaka Nusantara',           sky: ['#0c4a6e', '#0284c7'] },
-    3:  { shortName: 'Sabang',       title: 'Tugu Nol Kilometer RI',           sky: ['#0f172a', '#0369a1'] },
+    3:  { shortName: 'Sabang',       title: 'Tugu Nol Kilometer RI',           sky: ['#0f172a', '#0369a1'], photo: '/images/landmarks/3.jpg' },
     4:  { shortName: 'Pajak Hasil',  title: 'Gedung Kas & Perpajakan',         sky: ['#450a0a', '#991b1b'] },
-    5:  { shortName: 'Soetta',       title: 'Bandara Soekarno-Hatta',          sky: ['#0c4a6e', '#0369a1'] },
-    6:  { shortName: 'Medan',        title: 'Istana Maimun Kesultanan Deli',   sky: ['#14532d', '#15803d'] },
+    5:  { shortName: 'Soetta',       title: 'Bandara Soekarno-Hatta',          sky: ['#0c4a6e', '#0369a1'], photo: '/images/landmarks/5.jpg' },
+    6:  { shortName: 'Medan',        title: 'Istana Maimun Kesultanan Deli',   sky: ['#14532d', '#15803d'], photo: '/images/landmarks/6.jpg' },
     7:  { shortName: 'Kesempatan',   title: 'Kompas Keberuntungan',            sky: ['#451a03', '#b45309'] },
-    8:  { shortName: 'Padang',       title: 'Rumah Gadang Minangkabau',        sky: ['#3b0764', '#7e22ce'] },
-    9:  { shortName: 'Bukittinggi',  title: 'Jam Gadang & Ngarai Sianok',      sky: ['#1e293b', '#3b82f6'] },
+    8:  { shortName: 'Padang',       title: 'Rumah Gadang Minangkabau',        sky: ['#3b0764', '#7e22ce'], photo: '/images/landmarks/8.jpg' },
+    9:  { shortName: 'Bukittinggi',  title: 'Lanskap Kota Bukittinggi',        sky: ['#1e293b', '#3b82f6'], photo: '/images/landmarks/9.jpg' },
     10: { shortName: 'Penjara',      title: 'Benteng Tahanan Nusantara',       sky: ['#18181b', '#3f3f46'] },
-    11: { shortName: 'Palembang',    title: 'Jembatan Ampera Sungai Musi',     sky: ['#31102f', '#9d174d'] },
+    11: { shortName: 'Palembang',    title: 'Jembatan Ampera Sungai Musi',     sky: ['#31102f', '#9d174d'], photo: '/images/landmarks/11.jpg' },
     12: { shortName: 'PLN',          title: 'Menara Transmisi SUTET PLN',      sky: ['#1e1b4b', '#ca8a04'] },
-    13: { shortName: 'Lampung',      title: 'Menara Siger Bakauheni',          sky: ['#3b0764', '#6d28d9'] },
-    14: { shortName: 'Bengkulu',     title: 'Benteng Marlborough & Rafflesia', sky: ['#4c0519', '#be123c'] },
-    15: { shortName: 'Juanda',       title: 'Bandara Internasional Juanda',    sky: ['#082f49', '#0284c7'] },
-    16: { shortName: 'Jakarta',      title: 'Monumen Nasional (Monas)',        sky: ['#431407', '#ea580c'] },
+    13: { shortName: 'Lampung',      title: 'Menara Siger Bakauheni',          sky: ['#3b0764', '#6d28d9'], photo: '/images/landmarks/13.jpg' },
+    14: { shortName: 'Bengkulu',     title: 'Benteng Marlborough Bengkulu',    sky: ['#4c0519', '#be123c'], photo: '/images/landmarks/14.jpg' },
+    15: { shortName: 'Juanda',       title: 'Bandara Internasional Juanda',    sky: ['#082f49', '#0284c7'], photo: '/images/landmarks/15.jpg' },
+    16: { shortName: 'Jakarta',      title: 'Monumen Nasional (Monas)',        sky: ['#431407', '#ea580c'], photo: '/images/landmarks/16.jpg' },
     17: { shortName: 'Dana Umum',    title: 'Peti Pusaka Nusantara',           sky: ['#0c4a6e', '#0284c7'] },
-    18: { shortName: 'Bogor',        title: 'Istana Kepresidenan & Kujang',    sky: ['#064e3b', '#059669'] },
-    19: { shortName: 'Tangerang',    title: 'Masjid Raya Al-Azhom',            sky: ['#1e3a8a', '#2563eb'] },
+    18: { shortName: 'Bogor',        title: 'Istana Kepresidenan Bogor',       sky: ['#064e3b', '#059669'], photo: '/images/landmarks/18.jpg' },
+    19: { shortName: 'Tangerang',    title: 'Masjid Raya Al-Azhom',            sky: ['#1e3a8a', '#2563eb'], photo: '/images/landmarks/19.jpg' },
     20: { shortName: 'Parkir Bebas', title: 'Pendopo Taman Istirahat',         sky: ['#064e3b', '#0d9488'] },
-    21: { shortName: 'Bandung',      title: 'Gedung Sate Jawa Barat',          sky: ['#450a0a', '#dc2626'] },
+    21: { shortName: 'Bandung',      title: 'Gedung Sate Jawa Barat',          sky: ['#450a0a', '#dc2626'], photo: '/images/landmarks/21.jpg' },
     22: { shortName: 'Kesempatan',   title: 'Kompas Keberuntungan',            sky: ['#451a03', '#b45309'] },
-    23: { shortName: 'Yogyakarta',   title: 'Tugu Jogja & Candi Prambanan',    sky: ['#4c0519', '#e11d48'] },
-    24: { shortName: 'Semarang',     title: 'Lawang Sewu & Tugu Muda',         sky: ['#3b0764', '#9333ea'] },
-    25: { shortName: 'Ngurah Rai',   title: 'Bandara Internasional Ngurah Rai',sky: ['#431407', '#d97706'] },
-    26: { shortName: 'Surabaya',     title: 'Patung Sura dan Baya',            sky: ['#064e3b', '#047857'] },
-    27: { shortName: 'Malang',       title: 'Tugu Malang & Gunung Bromo',      sky: ['#1e1b4b', '#d97706'] },
+    23: { shortName: 'Yogyakarta',   title: 'Candi Prambanan Yogyakarta',      sky: ['#4c0519', '#e11d48'], photo: '/images/landmarks/23.jpg' },
+    24: { shortName: 'Semarang',     title: 'Lawang Sewu Semarang',            sky: ['#3b0764', '#9333ea'], photo: '/images/landmarks/24.jpg' },
+    25: { shortName: 'Ngurah Rai',   title: 'Bandara Internasional Ngurah Rai',sky: ['#431407', '#d97706'], photo: '/images/landmarks/25.jpg' },
+    26: { shortName: 'Surabaya',     title: 'Patung Sura dan Baya',            sky: ['#064e3b', '#047857'], photo: '/images/landmarks/26.jpg' },
+    27: { shortName: 'Malang',       title: 'Gunung Bromo Jawa Timur',         sky: ['#1e1b4b', '#d97706'], photo: '/images/landmarks/27.jpg' },
     28: { shortName: 'PDAM',         title: 'Bendungan & Menara Tirta PDAM',   sky: ['#083344', '#0891b2'] },
-    29: { shortName: 'Denpasar',     title: 'Pura Tanah Lot & Candi Bentar',   sky: ['#7c2d12', '#f59e0b'] },
+    29: { shortName: 'Denpasar',     title: 'Pura Tanah Lot Bali',             sky: ['#7c2d12', '#f59e0b'], photo: '/images/landmarks/29.jpg' },
     30: { shortName: 'Ke Penjara',   title: 'Perintah Penahanan',              sky: ['#450a0a', '#ef4444'] },
-    31: { shortName: 'Makassar',     title: 'Kapal Pinisi Pantai Losari',      sky: ['#1e3a8a', '#d97706'] },
-    32: { shortName: 'Manado',       title: 'Taman Laut Bunaken & Jembatan',   sky: ['#064e3b', '#0284c7'] },
+    31: { shortName: 'Makassar',     title: 'Anjungan Pantai Losari',          sky: ['#1e3a8a', '#d97706'], photo: '/images/landmarks/31.jpg' },
+    32: { shortName: 'Manado',       title: 'Taman Nasional Bunaken',          sky: ['#064e3b', '#0284c7'], photo: '/images/landmarks/32.jpg' },
     33: { shortName: 'Dana Umum',    title: 'Peti Pusaka Nusantara',           sky: ['#0c4a6e', '#0284c7'] },
-    34: { shortName: 'Balikpapan',   title: 'Garuda Nusantara & Teluk',        sky: ['#064e3b', '#10b981'] },
-    35: { shortName: 'Hasanuddin',   title: 'Bandara Sultan Hasanuddin',       sky: ['#0c4a6e', '#0284c7'] },
+    34: { shortName: 'Balikpapan',   title: 'Tugu Adipura Balikpapan',         sky: ['#064e3b', '#10b981'], photo: '/images/landmarks/34.jpg' },
+    35: { shortName: 'Hasanuddin',   title: 'Bandara Sultan Hasanuddin',       sky: ['#0c4a6e', '#0284c7'], photo: '/images/landmarks/35.jpg' },
     36: { shortName: 'Kesempatan',   title: 'Kompas Keberuntungan',            sky: ['#451a03', '#b45309'] },
-    37: { shortName: 'Jayapura',     title: 'Jembatan Merah Youtefa',          sky: ['#0f172a', '#0284c7'] },
+    37: { shortName: 'Jayapura',     title: 'Jembatan Merah Youtefa',          sky: ['#0f172a', '#0284c7'], photo: '/images/landmarks/37.jpg' },
     38: { shortName: 'Pajak Bumi',   title: 'Kas Agraria & Pajak Bumi',        sky: ['#3f2312', '#b45309'] },
-    39: { shortName: 'Raja Ampat',   title: 'Kepulauan Karst Wayag & Piaynemo',sky: ['#042f2e', '#06b6d4'] }
+    39: { shortName: 'Raja Ampat',   title: 'Kepulauan Karst Wayag',           sky: ['#042f2e', '#06b6d4'], photo: '/images/landmarks/39.jpg' }
   },
 
   getMeta(tile) {
@@ -59,8 +61,33 @@ const NusantaraLandmarks = {
     };
   },
 
+  preloadPhotos(onTileLoaded) {
+    Object.entries(this.metadata).forEach(([idStr, meta]) => {
+      if (!meta.photo) return;
+      const tileId = Number(idStr);
+      const existing = this.photoCache.get(tileId);
+      if (existing) {
+        if (existing.complete && existing.naturalWidth > 0 && typeof onTileLoaded === 'function') {
+          onTileLoaded(tileId);
+        }
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        if (typeof onTileLoaded === 'function') onTileLoaded(tileId);
+      };
+      img.src = meta.photo;
+      this.photoCache.set(tileId, img);
+    });
+  },
+
   getDataUrl(tile, w = 400, h = 240) {
     if (!tile) return '';
+    const meta = this.getMeta(tile);
+    if (meta.photo) {
+      return meta.photo;
+    }
+
     const key = `${tile.id}:${w}x${h}`;
     if (this.cache.has(key)) return this.cache.get(key);
 
@@ -90,31 +117,46 @@ const NusantaraLandmarks = {
     }
     ctx.clip();
 
-    // Sky Backdrop Gradient
-    const grad = ctx.createLinearGradient(x, y, x, y + h);
-    grad.addColorStop(0, meta.sky[0]);
-    grad.addColorStop(1, meta.sky[1]);
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, y, w, h);
+    const photoImg = tile ? this.photoCache.get(tile.id) : null;
+    if (photoImg && photoImg.complete && photoImg.naturalWidth > 0) {
+      // Draw real HD photograph with cover-fit math
+      const scale = Math.max(w / photoImg.naturalWidth, h / photoImg.naturalHeight);
+      const dw = photoImg.naturalWidth * scale;
+      const dh = photoImg.naturalHeight * scale;
+      const dx = x + (w - dw) / 2;
+      const dy = y + (h - dh) / 2;
+      ctx.drawImage(photoImg, dx, dy, dw, dh);
 
-    // Subtle sun/moon glow in sky
-    const sunGrad = ctx.createRadialGradient(x + w * 0.72, y + h * 0.28, w * 0.02, x + w * 0.72, y + h * 0.28, w * 0.35);
-    sunGrad.addColorStop(0, 'rgba(253, 224, 71, 0.38)');
-    sunGrad.addColorStop(1, 'rgba(253, 224, 71, 0)');
-    ctx.fillStyle = sunGrad;
-    ctx.fillRect(x, y, w, h);
+      // Subtle edge contrast vignette so the photo sits cleanly on dark card tiles
+      const vignette = ctx.createLinearGradient(x, y, x, y + h);
+      vignette.addColorStop(0, 'rgba(15, 23, 42, 0.12)');
+      vignette.addColorStop(0.65, 'rgba(15, 23, 42, 0)');
+      vignette.addColorStop(1, 'rgba(15, 23, 42, 0.28)');
+      ctx.fillStyle = vignette;
+      ctx.fillRect(x, y, w, h);
+    } else {
+      // Procedural vector fallback while photo loads or for non-photo special tiles
+      const grad = ctx.createLinearGradient(x, y, x, y + h);
+      grad.addColorStop(0, meta.sky[0]);
+      grad.addColorStop(1, meta.sky[1]);
+      ctx.fillStyle = grad;
+      ctx.fillRect(x, y, w, h);
 
-    // Normalize coordinate space to 200 x 140 for crisp scalable vector drawing
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(w / 200, h / 140);
+      const sunGrad = ctx.createRadialGradient(x + w * 0.72, y + h * 0.28, w * 0.02, x + w * 0.72, y + h * 0.28, w * 0.35);
+      sunGrad.addColorStop(0, 'rgba(253, 224, 71, 0.38)');
+      sunGrad.addColorStop(1, 'rgba(253, 224, 71, 0)');
+      ctx.fillStyle = sunGrad;
+      ctx.fillRect(x, y, w, h);
 
-    this.drawVectorScene(ctx, tile);
-
-    ctx.restore();
+      ctx.save();
+      ctx.translate(x, y);
+      ctx.scale(w / 200, h / 140);
+      this.drawVectorScene(ctx, tile);
+      ctx.restore();
+    }
 
     if (drawBorder) {
-      ctx.strokeStyle = 'rgba(251, 191, 36, 0.42)';
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.52)';
       ctx.lineWidth = Math.max(2, w * 0.012);
       ctx.beginPath();
       if (typeof ctx.roundRect === 'function') {

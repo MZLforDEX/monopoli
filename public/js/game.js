@@ -124,7 +124,7 @@ function updatePlayersPanel(players, currentPlayerId) {
         </div>
       </div>
       <div class="player-stats-row">
-        <div class="player-money mono-num">Rp${p.money.toLocaleString('id-ID')}rb</div>
+        <div class="player-money mono-num">${formatRupiah(p.money)}</div>
         <div class="player-props-count">${p.properties.length} Kota</div>
       </div>
       ${p.inJail ? '<div class="player-jail">🔒 Ditahan di Penjara</div>' : ''}
@@ -162,7 +162,7 @@ function updateMobilePlayerStrip(players, currentPlayerId) {
       <span class="chip-token">${pawnHtml}</span>
       <span class="chip-info">
         <span class="chip-name">${p.name}</span>
-        <span class="chip-money mono-num">Rp${p.money.toLocaleString('id-ID')}rb</span>
+        <span class="chip-money mono-num">${formatRupiah(p.money)}</span>
       </span>
     `;
     strip.appendChild(chip);
@@ -342,14 +342,14 @@ function waitMs(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function runTokenMoveWithStop(playerId, fromPos, toPos, playersSnapshot) {
+async function runTokenMoveWithStop(playerId, fromPos, toPos, playersSnapshot, stepDelta = 1) {
   if (fromPos === toPos) return;
   if (typeof Board3D !== 'undefined' && Board3D.initialized && is3DMode) {
     await Board3D.animatePlayerMove3D(playerId, fromPos, toPos, playersSnapshot, () => {
       SFX.play('rent');
-    });
+    }, stepDelta);
   } else {
-    await animatePlayerMove(playerId, fromPos, toPos, playersSnapshot);
+    await animatePlayerMove(playerId, fromPos, toPos, playersSnapshot, stepDelta);
   }
   // Keep 2D & 3D synced at the stopped tile and pause briefly so the stop is clearly visible
   const stoppedPlayers = (playersSnapshot || []).map(p => (p.id === playerId ? { ...p, position: toPos } : p));
@@ -385,9 +385,9 @@ function presentBuyOptionModal({ playerId, space, canAfford }) {
         <span class="modal-landmark-sub">📍 ${meta.title}</span>
       </div>
       <div class="modal-stat-grid">
-        <div class="modal-stat-row"><span>Harga Beli</span><strong class="mono-num">Rp${space.price.toLocaleString('id-ID')}rb</strong></div>
-        ${space.rent ? `<div class="modal-stat-row"><span>Sewa Dasar</span><strong class="mono-num">Rp${space.rent}rb</strong></div>` : ''}
-        ${space.houseCost ? `<div class="modal-stat-row"><span>Biaya Rumah</span><strong class="mono-num">Rp${space.houseCost}rb</strong></div>` : ''}
+        <div class="modal-stat-row"><span>Harga Beli</span><strong class="mono-num">${formatRupiah(space.price)}</strong></div>
+        ${space.rent ? `<div class="modal-stat-row"><span>Sewa Dasar</span><strong class="mono-num">${formatRupiah(space.rent)}</strong></div>` : ''}
+        ${space.houseCost ? `<div class="modal-stat-row"><span>Biaya Rumah</span><strong class="mono-num">${formatRupiah(space.houseCost)}</strong></div>` : ''}
       </div>
     </div>
   `;
@@ -448,7 +448,14 @@ socket.on('dice-result', async (data) => {
       const finalPosition = latestPlayer ? latestPlayer.position : moveResult.newPosition;
 
       if (finalPosition !== moveResult.newPosition && window.gameState) {
-        await runTokenMoveWithStop(playerId, moveResult.newPosition, finalPosition, window.gameState.players);
+        if (latestPlayer && latestPlayer.inJail && finalPosition === 10) {
+          updatePlayerPositions(window.gameState.players);
+          await waitMs(280);
+        } else {
+          const backDist = (moveResult.newPosition - finalPosition + 40) % 40;
+          const stepDelta = backDist === 3 ? -1 : 1;
+          await runTokenMoveWithStop(playerId, moveResult.newPosition, finalPosition, window.gameState.players, stepDelta);
+        }
       }
 
       if (playerId === myPlayerId && typeof showTileInfo === 'function') {

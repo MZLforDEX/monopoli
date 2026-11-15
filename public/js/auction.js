@@ -18,12 +18,12 @@ function showAuctionModal(propertyId, space, auctionState = null) {
         <h4>${space.name}</h4>
         <span class="modal-landmark-sub">📍 ${meta.title}</span>
       </div>
-      <p>Harga Pasar: <strong class="mono-num">Rp${space.price.toLocaleString('id-ID')}rb</strong></p>
+      <p>Harga Pasar: <strong class="mono-num">${formatRupiah(space.price)}</strong></p>
     </div>
   `;
   document.getElementById('current-bid').textContent = 'Rp0';
   document.getElementById('current-bidder').textContent = 'Belum ada';
-  document.getElementById('bid-amount').value = 100;
+  document.getElementById('bid-amount').value = 100000;
   modal.classList.remove('hidden');
 
   if (auctionState) {
@@ -37,7 +37,7 @@ function updateAuctionDisplay(data) {
     currentAuction.currentBid = data.currentBid || 0;
   }
   const bidEl = document.getElementById('current-bid');
-  if (bidEl) bidEl.textContent = `Rp${(data.currentBid || 0).toLocaleString('id-ID')}rb`;
+  if (bidEl) bidEl.textContent = formatRupiah(data.currentBid || 0);
 
   if (data.currentBidder && window.gameState) {
     const bidder = window.gameState.players.find(p => p.id === data.currentBidder);
@@ -46,10 +46,10 @@ function updateAuctionDisplay(data) {
     document.getElementById('current-bidder').textContent = 'Belum ada';
   }
 
-  const nextMinBid = (data.currentBid || 0) + 100;
+  const nextMinBidRupiah = ((data.currentBid || 0) + 100) * 1000;
   const input = document.getElementById('bid-amount');
-  if (input && Number(input.value) < nextMinBid) {
-    input.value = nextMinBid;
+  if (input && Number(input.value) < nextMinBidRupiah) {
+    input.value = nextMinBidRupiah;
   }
 }
 
@@ -57,13 +57,14 @@ function quickBid(increment) {
   const base = currentAuction ? (currentAuction.currentBid || 0) : 0;
   const amount = base + increment;
   const input = document.getElementById('bid-amount');
-  if (input) input.value = amount;
+  if (input) input.value = amount * 1000;
   socket.emit('place-bid', { amount });
 }
 
 function placeBid() {
-  const amount = parseInt(document.getElementById('bid-amount').value, 10);
-  if (!amount || amount <= 0) return;
+  const rawRupiah = parseInt(document.getElementById('bid-amount').value, 10);
+  if (!rawRupiah || rawRupiah < 1000) return;
+  const amount = Math.round(rawRupiah / 1000);
   socket.emit('place-bid', { amount });
 }
 

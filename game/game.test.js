@@ -119,3 +119,153 @@ test('Rejoin updates player socket ID across room state, board ownership, and au
   assert.equal(room.getCurrentPlayer().id, 'new-sock');
   assert.equal(room.boardState[6].ownerId, 'new-sock');
 });
+
+test('Mortgaged airports and utilities are excluded from active count in rent calculation', () => {
+  const room = new GameRoom('NUS-MTG', 'p1');
+  room.addPlayer('p1', 'Raja', 'merah');
+  room.addPlayer('p2', 'Tamu', 'biru');
+  room.startGame(true);
+
+  // Own 2 airports: Soekarno-Hatta (5) and Ngurah Rai (15)
+  room.buyProperty('p1', 5);
+  room.buyProperty('p1', 15);
+  const p1 = room.players.get('p1');
+  assert.equal(rules.calculateRent(properties[5], room.boardState[5], 7, p1.properties, room.boardState), 500);
+
+  // Mortgage Ngurah Rai (15) -> landing on Soekarno-Hatta (5) counts only 1 active airport
+  room.mortgageProperty('p1', 15);
+  assert.equal(rules.calculateRent(properties[5], room.boardState[5], 7, p1.properties, room.boardState), 250);
+  assert.equal(rules.calculateRent(properties[15], room.boardState[15], 7, p1.properties, room.boardState), 0);
+
+  // Own 2 utilities: PLN (12) and PDAM (28)
+  room.buyProperty('p1', 12);
+  room.buyProperty('p1', 28);
+  assert.equal(rules.calculateRent(properties[12], room.boardState[12], 8, p1.properties, room.boardState), 800);
+
+  // Mortgage PDAM (28) -> PLN charges 40x dice instead of 100x
+  room.mortgageProperty('p1', 28);
+  assert.equal(rules.calculateRent(properties[12], room.boardState[12], 8, p1.properties, room.boardState), 320);
+});
+
+test('Bankruptcy via payRent transfers cash, liquidated buildings, Jail-Free cards, and properties to creditor', () => {
+  const room = new GameRoom('NUS-BNK', 'p1');
+  room.addPlayer('p1', 'Kreditur', 'merah');
+  room.addPlayer('p2', 'Debitur', 'biru');
+  room.startGame(true);
+
+  const p1 = room.players.get('p1');
+  const p2 = room.players.get('p2');
+
+  // Give p1 full brown group with a hotel on 3 (rent = 48 * 125 = 6000)
+  room.buyProperty('p1', 1);
+  room.buyProperty('p1', 3);
+  room.boardState[3].hotel = true;
+
+  // Give p2 Medan (pos 6, houseCost 500 -> 50% refund = 250) + jailFreeCard + small cash
+  room.buyProperty('p2', 6);
+  room.boardState[6].houses = 1;
+  p2.jailFreeCards = 2;
+  p2.money = 400;
+
+  const p1MoneyBefore = p1.money;
+  const rent = room.payRent('p2', 3, 5);
+  assert.equal(rent, 6000);
+  assert.equal(p2.bankrupt, true);
+  assert.equal(p2.money, 0);
+  assert.equal(p2.properties.length, 0);
+  assert.equal(p2.jailFreeCards, 0);
+
+  // p1 receives p2's remaining cash (400) + 50% of p2's building (250) = +650, plus pos 6 and 2 jail-free cards
+  assert.equal(p1.money, p1MoneyBefore + 650);
+  assert.equal(room.boardState[6].ownerId, 'p1');
+  assert.equal(room.boardState[6].houses, 0);
+  assert.ok(p1.properties.includes(6));
+  assert.equal(p1.jailFreeCards, 2);
+});
+
+test('Bank building supply caps at 32 houses and 12 hotels, and mortgaged group rules apply properly', () => {
+  const room = new GameRoom('NUS-SUP', 'p1');
+  room.addPlayer('p1', 'Sultan', 'merah');
+  room.addPlayer('p2', 'Lawan', 'biru');
+  room.startGame(true);
+
+  // Full brown group: 1 and 3
+  room.buyProperty('p1', 1);
+  room.buyProperty('p1', 3);
+  // Mortgage tile 3 -> cannot build on tile 1, but tile 1 still gets 2x base rent!
+  room.mortgageProperty('p1', 3);
+  assert.equal(rules.canBuildHouse('p1', 1, room.boardState), false);
+  const p1 = room.players.get('p1');
+  assert.equal(rules.calculateRent(properties[1], room.boardState[1], 6, p1.properties, room.boardState), 96);
+
+  // Unmortgage tile 3 and fill Bank to 32 houses across other tiles
+  p1.money = 50000;
+  room.unmortgageProperty('p1', 3);
+  const otherProps = [6, 8, 9, 11, 13, 14, 16, 18]; // 8 * 4 = 32 houses
+  otherProps.forEach(id => {
+    room.boardState[id].ownerId = 'p2';
+    room.boardState[id].houses = 4;
+  });
+  assert.equal(rules.getBuildingSupply(room.boardState).housesRemaining, 0);
+  assert.equal(rules.canBuildHouse('p1', 1, room.boardState), false);
+
+  // Free 4 houses and test hotel cap of 12 hotels
+  room.boardState[18].houses = 0;
+  assert.equal(rules.canBuildHouse('p1', 1, room.boardState), true);
+
+  room.boardState[1].houses = 4;
+  room.boardState[3].houses = 4;
+  assert.equal(rules.canBuildHotel('p1', 1, room.boardState), true);
+
+  const hotelProps = [6, 8, 9, 11, 13, 14, 16, 18, 19, 21, 23, 24]; // 12 hotels
+  hotelProps.forEach(id => {
+    room.boardState[id].hotel = true;
+    room.boardState[id].houses = 0;
+  });
+  assert.equal(rules.getBuildingSupply(room.boardState).hotelsRemaining, 0);
+  assert.equal(rules.canBuildHotel('p1', 1, room.boardState), false);
+});
+
+test('Escaping Jail via doubles does not grant a bonus roll, and trading blocks groups with buildings', () => {
+  const room = new GameRoom('NUS-JAIL', 'p1');
+  room.addPlayer('p1', 'Bebas', 'merah');
+  room.addPlayer('p2', 'Partner', 'biru');
+  room.startGame(true);
+
+  room.lastDice = { d1: 4, d2: 4, total: 8, isDouble: true };
+  room.escapedJailByDouble = true;
+  room.startAuction(1);
+  room.passAuction('p1');
+  room.passAuction('p2');
+  // Since escapedJailByDouble is true, endAuction must enter 'end' phase, NOT 'roll'
+  assert.equal(room.turnPhase, 'end');
+
+  // Cannot trade a lot from a group that has buildings on any sibling lot
+  room.buyProperty('p1', 1);
+  room.buyProperty('p1', 3);
+  room.buildHouse('p1', 1);
+  const blockedTrade = room.executeTrade('p1', 'p2', {
+    fromMoney: 0,
+    toMoney: 500,
+    fromProperties: [3],
+    toProperties: []
+  });
+  assert.equal(blockedTrade, false);
+});
+
+test('formatRupiah formats Indonesian currency cleanly (Rp1000, Rp10.000, Rp100.000, Rp 1jt, Rp 1,12jt)', () => {
+  assert.equal(rules.formatRupiah(0), 'Rp0');
+  assert.equal(rules.formatRupiah(1), 'Rp1000');
+  assert.equal(rules.formatRupiah(10), 'Rp10.000');
+  assert.equal(rules.formatRupiah(48), 'Rp48.000');
+  assert.equal(rules.formatRupiah(100), 'Rp100.000');
+  assert.equal(rules.formatRupiah(500), 'Rp500.000');
+  assert.equal(rules.formatRupiah(1000), 'Rp 1jt');
+  assert.equal(rules.formatRupiah(1120), 'Rp 1,12jt');
+  assert.equal(rules.formatRupiah(1500), 'Rp 1,5jt');
+  assert.equal(rules.formatRupiah(2000), 'Rp 2jt');
+  assert.equal(rules.formatRupiah(15000), 'Rp 15jt');
+  assert.equal(rules.formatRupiah(-500), '-Rp500.000');
+});
+
+

@@ -179,12 +179,12 @@
                     <span>oleh <strong id="current-bidder">-</strong></span>
                 </div>
                 <div class="quick-bid-row">
-                    <button type="button" class="btn btn-tiny" onclick="quickBid(100)">+Rp100rb</button>
-                    <button type="button" class="btn btn-tiny" onclick="quickBid(250)">+Rp250rb</button>
-                    <button type="button" class="btn btn-tiny" onclick="quickBid(500)">+Rp500rb</button>
+                    <button type="button" class="btn btn-tiny" onclick="quickBid(100)">+Rp100.000</button>
+                    <button type="button" class="btn btn-tiny" onclick="quickBid(250)">+Rp250.000</button>
+                    <button type="button" class="btn btn-tiny" onclick="quickBid(500)">+Rp500.000</button>
                 </div>
                 <div class="bid-input-group">
-                    <input type="number" id="bid-amount" step="100" min="100" placeholder="Jumlah bid">
+                    <input type="number" id="bid-amount" step="50000" min="100000" placeholder="Bid (Rp)">
                     <button type="button" class="btn btn-gold" onclick="placeBid()">Tawar</button>
                     <button type="button" class="btn btn-secondary" onclick="passAuction()">Pass</button>
                 </div>
@@ -199,13 +199,13 @@
                 <div class="trade-side">
                     <h4>Saya Tawarkan</h4>
                     <div id="trade-my-props" class="trade-props-box"></div>
-                    <label>Tambahan Uang (rb): <input type="number" id="trade-my-money" value="0" step="100" min="0"></label>
+                    <label>Tambahan Uang (Rp): <input type="number" id="trade-my-money" value="0" step="50000" min="0"></label>
                 </div>
                 <div class="trade-arrow">⇄</div>
                 <div class="trade-side">
                     <h4>Saya Minta</h4>
                     <div id="trade-their-props" class="trade-props-box"></div>
-                    <label>Minta Uang (rb): <input type="number" id="trade-their-money" value="0" step="100" min="0"></label>
+                    <label>Minta Uang (Rp): <input type="number" id="trade-their-money" value="0" step="50000" min="0"></label>
                 </div>
             </div>
             <div class="modal-buttons">
@@ -231,7 +231,7 @@
             <h3>🔒 Kamu Ditahan di Penjara!</h3>
             <p>Pilih cara untuk keluar dari penjara pada giliran ini:</p>
             <div class="modal-buttons">
-                <button type="button" class="btn btn-gold" onclick="payJail()">💰 Tebus Rp500rb</button>
+                <button type="button" class="btn btn-gold" onclick="payJail()">💰 Tebus Rp500.000</button>
                 <button type="button" class="btn btn-primary" id="jail-free-btn" onclick="useJailFree()" style="display:none">🃏 Pakai Kartu Bebas</button>
                 <button type="button" class="btn btn-secondary" onclick="closeJailModal()">🎲 Coba Lempar Double</button>
             </div>
@@ -242,10 +242,11 @@
         <div class="modal modal-large">
             <h3>📖 Panduan Monopoli Nusantara</h3>
             <div class="rules-content">
-                <p><strong>1. Modal Awal &amp; Gaji START:</strong> Setiap pemain mulai dengan modal <strong>Rp15.000rb (Rp15 Juta)</strong> dan menerima <strong>Rp2.000rb</strong> setiap melewati petak START.</p>
-                <p><strong>2. Monopoli Grup Warna &amp; Bangunan:</strong> Miliki seluruh kota dalam 1 grup warna untuk menggandakan sewa dasar (2×) dan membuka izin pembangunan Rumah (hingga 4 rumah secara merata) serta Hotel.</p>
-                <p><strong>3. Bandara &amp; Utilitas:</strong> Sewa Bandara meningkat sesuai jumlah bandara yang kamu miliki (Rp250rb s/d Rp2.000rb). Sewa PLN &amp; PDAM dihitung dari total mata dadu (40× atau 100×).</p>
-                <p><strong>4. Kontrol 3D &amp; Mobile:</strong> Geser layar untuk memutar kamera 3D, cubit untuk memperbesar, atau ketuk tombol <strong>🗺️ 2D Peta</strong> di kanan atas kapan saja.</p>
+                <p><strong>1. Modal Awal &amp; Gaji START:</strong> Setiap pemain mulai dengan modal <strong>Rp 15jt</strong> dan menerima <strong>Rp 2jt</strong> setiap melewati atau mendarat di START.</p>
+                <p><strong>2. Beli atau Lelang Wajib:</strong> Jika mendarat di properti bebas dan tidak membelinya, properti langsung <strong>dilelang</strong> kepada semua pemain aktif.</p>
+                <p><strong>3. Monopoli Warna &amp; Bangunan:</strong> Miliki seluruh kota dalam 1 grup warna untuk menggandakan sewa dasar (2×) serta membangun hingga 4 Rumah secara merata lalu 1 Hotel (stok Bank: 32 Rumah &amp; 12 Hotel).</p>
+                <p><strong>4. Dadu Kembar (Double) &amp; Penjara:</strong> Lempar dadu kembar memberi kesempatan lempar ulang, tetapi <strong>3× double beruntun</strong> langsung masuk Penjara. Keluar Penjara lewat dadu kembar langsung mengakhiri giliran (tanpa lempar ulang), atau tebus <strong>Rp500.000</strong> / pakai Kartu Bebas Penjara sebelum melempar dadu.</p>
+                <p><strong>5. Gadai &amp; Kebangkrutan:</strong> Jual semua bangunan di grup warna terlebih dahulu sebelum menggadai (50% harga, tebus +10%). Pemain yang bangkrut kepada pemain lain menyerahkan sisa uang dan seluruh propertinya.</p>
             </div>
             <div class="modal-buttons">
                 <button type="button" class="btn btn-primary" onclick="toggleRulesModal(false)">Tutup Panduan</button>
@@ -267,6 +268,7 @@
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script src="js/libs/three.min.js"></script>
     <script src="js/libs/OrbitControls.js"></script>
+    <script src="js/money.js"></script>
     <script src="js/landmarks.js"></script>
     <script src="js/board3d.js"></script>
     <script src="js/board.js"></script>

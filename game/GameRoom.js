@@ -14,6 +14,7 @@ class GameRoom {
     this.turnOrder = []; // player ids
     this.turnPhase = 'roll'; // 'roll' | 'buying' | 'auction' | 'end'
     this.lastDice = null;
+    this.escapedJailByDouble = false;
     this.boardState = {}; // propertyId -> { ownerId, houses, hotel, mortgaged }
     this.chanceDeck = this.shuffleDeck([...cards.chance]);
     this.communityDeck = this.shuffleDeck([...cards.community]);
@@ -189,6 +190,7 @@ class GameRoom {
     }
     this.turnPhase = 'roll';
     this.lastDice = null;
+    this.escapedJailByDouble = false;
     return { type: 'next-turn', playerId: current ? current.id : null };
   }
 
@@ -228,18 +230,46 @@ class GameRoom {
     if (!player) return;
     const creditor = creditorId ? this.players.get(creditorId) : null;
 
-    if (creditor && player.money > 0) {
-      creditor.money += player.money;
+    // Liquidate buildings at 50% value first so cash transfers cleanly
+    let buildingRefund = 0;
+    player.properties.forEach(id => {
+      const s = this.boardState[id];
+      const space = properties[id];
+      if (!s || !space || !space.houseCost) return;
+      const units = s.hotel ? 5 : (s.houses || 0);
+      buildingRefund += units * Math.floor(space.houseCost / 2);
+      s.houses = 0;
+      s.hotel = false;
+    });
+
+    if (creditor && !creditor.bankrupt) {
+      const cashTransfer = Math.max(0, player.money) + buildingRefund;
+      if (cashTransfer > 0) {
+        creditor.money += cashTransfer;
+      }
+      if (player.jailFreeCards > 0) {
+        creditor.jailFreeCards += player.jailFreeCards;
+      }
+      player.properties.forEach(id => {
+        if (this.boardState[id]) {
+          this.boardState[id].ownerId = creditor.id;
+        }
+        if (!creditor.properties.includes(id)) {
+          creditor.properties.push(id);
+        }
+      });
+    } else {
+      player.properties.forEach(id => {
+        this.boardState[id] = { ownerId: null, houses: 0, hotel: false, mortgaged: false };
+      });
     }
+
     player.money = 0;
+    player.jailFreeCards = 0;
     player.bankrupt = true;
     player.inJail = false;
     player.jailTurns = 0;
     player.doublesCount = 0;
-
-    player.properties.forEach(id => {
-      this.boardState[id] = { ownerId: null, houses: 0, hotel: false, mortgaged: false };
-    });
     player.properties = [];
   }
 
@@ -267,8 +297,7 @@ class GameRoom {
     const space = properties[propertyId];
     const rent = rules.calculateRent(space, state, diceTotal, owner.properties, this.boardState);
     if (payer.money < rent) {
-      owner.money += Math.max(0, payer.money);
-      this.bankruptPlayer(payerId, null);
+      this.bankruptPlayer(payerId, owner.id);
     } else {
       payer.money -= rent;
       owner.money += rent;
@@ -408,7 +437,7 @@ class GameRoom {
     this.auctionState = null;
 
     const current = this.getCurrentPlayer();
-    if (current && !current.bankrupt && !current.inJail && this.lastDice?.isDouble) {
+    if (current && !current.bankrupt && !current.inJail && this.lastDice?.isDouble && !this.escapedJailByDouble) {
       this.turnPhase = 'roll';
     } else {
       this.turnPhase = 'end';
@@ -439,13 +468,21 @@ class GameRoom {
     if (from.money < fromMoney || to.money < toMoney) return false;
     if (fromMoney === 0 && toMoney === 0 && fromProperties.length === 0 && toProperties.length === 0) return false;
 
+    const hasGroupBuildings = (propId) => {
+      const space = properties[propId];
+      if (!space || !space.group) return false;
+      return properties
+        .filter(p => p.group === space.group)
+        .some(p => this.boardState[p.id] && (this.boardState[p.id].houses > 0 || this.boardState[p.id].hotel));
+    };
+
     for (const id of fromProperties) {
       const s = this.boardState[id];
-      if (!s || s.ownerId !== fromId || s.houses > 0 || s.hotel) return false;
+      if (!s || s.ownerId !== fromId || s.houses > 0 || s.hotel || hasGroupBuildings(id)) return false;
     }
     for (const id of toProperties) {
       const s = this.boardState[id];
-      if (!s || s.ownerId !== toId || s.houses > 0 || s.hotel) return false;
+      if (!s || s.ownerId !== toId || s.houses > 0 || s.hotel || hasGroupBuildings(id)) return false;
     }
 
     from.money -= fromMoney;

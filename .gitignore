@@ -1,5 +1,6 @@
 node_modules/
 .superpowers/
+.playwright-cli/
 .DS_Store
 Thumbs.db
 *.log

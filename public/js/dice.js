@@ -50,13 +50,14 @@ function animateDice(d1, d2, callback) {
   }, 65);
 }
 
-function animatePlayerMove(playerId, fromPos, toPos, players) {
+function animatePlayerMove(playerId, fromPos, toPos, players, stepDelta = 1) {
   return new Promise((resolve) => {
     const steps = [];
     let pos = fromPos;
     let guard = 0;
+    const dirStep = stepDelta < 0 ? -1 : 1;
     while (pos !== toPos && guard < 42) {
-      pos = (pos + 1) % 40;
+      pos = (pos + dirStep + 40) % 40;
       steps.push(pos);
       guard++;
     }
