@@ -1,8 +1,40 @@
-const socket = io();
 const params = new URLSearchParams(window.location.search);
 let roomCode = params.get('room');
 let myPlayerId = params.get('playerId');
 const isAutoStart = params.get('autostart') === '1';
+const isLocalMode = params.get('mode') === 'local' || typeof io === 'undefined';
+
+function createSocketBridge() {
+  const registeredListeners = [];
+  let backend = isLocalMode
+    ? window.createLocalMonopolySocket()
+    : io({ timeout: 1800, reconnectionAttempts: 1 });
+  let switchedToLocal = isLocalMode;
+
+  function switchToLocal() {
+    if (switchedToLocal || typeof window.createLocalMonopolySocket !== 'function') return false;
+    switchedToLocal = true;
+    try { backend.disconnect?.(); } catch (_) {}
+    backend = window.createLocalMonopolySocket();
+    registeredListeners.forEach(([event, fn]) => backend.on(event, fn));
+    return true;
+  }
+
+  return {
+    on(event, fn) {
+      registeredListeners.push([event, fn]);
+      backend.on(event, fn);
+    },
+    emit(event, payload, callback) {
+      backend.emit(event, payload, callback);
+    },
+    switchToLocal,
+    isLocal: () => switchedToLocal,
+    getBackend: () => backend
+  };
+}
+
+const socket = createSocketBridge();
 
 window.myPlayerId = myPlayerId;
 window.gameState = null;
@@ -28,7 +60,50 @@ function applyRoomStateToUI(state) {
   updateTurnUI(state);
 }
 
+function startLocalGameFromParams() {
+  const playerName = params.get('name') || 'Nakhoda';
+  const token = params.get('token') || 'merah';
+  const botCount = Number(params.get('bots')) || 3;
+  socket.emit('quick-start', { name: playerName, token, botCount }, (res) => {
+    if (res && res.success) {
+      roomCode = res.code;
+      myPlayerId = res.playerId;
+      window.myPlayerId = res.playerId;
+      const codeDisplay = document.getElementById('room-code-display');
+      if (codeDisplay) codeDisplay.textContent = roomCode;
+      if (Array.isArray(res.logs)) {
+        res.logs.forEach(entry => addLogMessage(entry.message, entry.timestamp));
+      }
+    } else {
+      window.location.href = '/';
+    }
+  });
+}
+
 function initRoomConnection() {
+  if (isLocalMode) {
+    startLocalGameFromParams();
+    return;
+  }
+
+  const backend = socket.getBackend();
+  let fallbackTriggered = false;
+  const triggerLocalFallback = () => {
+    if (fallbackTriggered) return;
+    fallbackTriggered = true;
+    if (socket.switchToLocal()) {
+      startLocalGameFromParams();
+    }
+  };
+
+  if (backend && typeof backend.on === 'function') {
+    backend.on('connect_error', () => {
+      if (isAutoStart || !roomCode) {
+        triggerLocalFallback();
+      }
+    });
+  }
+
   if (roomCode && myPlayerId) {
     const codeDisplay = document.getElementById('room-code-display');
     if (codeDisplay) codeDisplay.textContent = roomCode;

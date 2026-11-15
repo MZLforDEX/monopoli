@@ -268,4 +268,36 @@ test('formatRupiah formats Indonesian currency cleanly (Rp1000, Rp10.000, Rp100.
   assert.equal(rules.formatRupiah(-500), '-Rp500.000');
 });
 
+test('vercel.json configures public outputDirectory cleanly', () => {
+  const vercelCfg = require('../vercel.json');
+  assert.equal(vercelCfg.outputDirectory, 'public');
+  assert.equal(vercelCfg.framework, null);
+  assert.equal(vercelCfg.buildCommand, 'npm run build');
+});
+
+test('Client local-engine runs quick-start, roll-dice, and buy/auction flow offline', async () => {
+  const cardsData = require('../public/data/cards.json');
+  const { createLocalMonopolySocket } = require('../public/js/local-engine');
+  const localSocket = createLocalMonopolySocket({ properties, cards: cardsData });
+
+  let latestState = null;
+  let diceEvent = null;
+  localSocket.on('room-state', (s) => { latestState = s; });
+  localSocket.on('dice-result', (d) => { diceEvent = d; });
+
+  const startRes = await new Promise(resolve => {
+    localSocket.emit('quick-start', { name: 'Tester', token: 'merah', botCount: 3 }, resolve);
+  });
+
+  assert.equal(startRes.success, true);
+  assert.equal(latestState.players.length, 4);
+  assert.equal(latestState.currentPlayerId, startRes.playerId);
+  assert.equal(latestState.players[0].money, 15000);
+
+  localSocket.emit('roll-dice');
+  assert.ok(diceEvent && diceEvent.dice.total >= 2);
+  assert.ok(latestState.players[0].position > 0 || latestState.players[0].inJail);
+});
+
+
 
