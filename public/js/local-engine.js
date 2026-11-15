@@ -1,18 +1,31 @@
 (function (root) {
-  function createLocalMonopolySocket(options = {}) {
-    const listeners = new Map();
+  function createLocalMonopolyEngine(options = {}) {
     let properties = options.properties || null;
     let cards = options.cards || null;
     let room = null;
-    const humanSocketId = 'local-player-1';
+    const broadcastHandlers = [];
+    const directHandlers = [];
 
-    function emitToClient(event, payload) {
-      const fns = listeners.get(event) || [];
-      fns.forEach(fn => {
+    function emitBroadcast(event, payload) {
+      broadcastHandlers.forEach(fn => {
         try {
-          fn(payload);
+          fn(event, payload);
         } catch (err) {
-          console.error('[LocalEngine listener error]', event, err);
+          console.error('[LocalEngine broadcast error]', event, err);
+        }
+      });
+    }
+
+    function emitDirect(targetId, event, payload) {
+      if (directHandlers.length === 0) {
+        emitBroadcast(event, payload);
+        return;
+      }
+      directHandlers.forEach(fn => {
+        try {
+          fn(targetId, event, payload);
+        } catch (err) {
+          console.error('[LocalEngine direct error]', targetId, event, err);
         }
       });
     }
@@ -189,54 +202,14 @@
       };
     }
 
-    function createRoom(code, hostName, hostToken, botCount = 3) {
-      const players = new Map();
-      const human = createPlayer(humanSocketId, hostName || 'Nakhoda', hostToken || 'merah', false);
-      players.set(human.id, human);
-
-      const botNames = ['Bot Garuda', 'Bot Komodo', 'Bot Rajawali', 'Bot Cendrawasih'];
-      const tokens = ['merah', 'biru', 'hijau', 'kuning'];
-      const numBots = Math.min(3, Math.max(1, Number(botCount) || 3));
-      for (let i = 0; i < numBots; i++) {
-        const usedTokens = [...players.values()].map(p => p.token);
-        const availToken = tokens.find(t => !usedTokens.includes(t));
-        if (!availToken) break;
-        const usedNames = [...players.values()].map(p => p.name);
-        const botName = botNames.find(n => !usedNames.includes(n)) || `Bot ${players.size + 1}`;
-        const bot = createPlayer(`bot-local-${i + 1}`, botName, availToken, true);
-        players.set(bot.id, bot);
-      }
-
+    function initEmptyBoardState() {
       const boardState = {};
       properties.forEach(p => {
         if (['property', 'airport', 'utility'].includes(p.type)) {
           boardState[p.id] = { ownerId: null, houses: 0, hotel: false, mortgaged: false };
         }
       });
-
-      const allIds = [...players.keys()];
-      const others = shuffleDeck(allIds.filter(id => id !== human.id));
-
-      return {
-        code,
-        hostId: human.id,
-        players,
-        state: 'playing',
-        currentPlayerIndex: 0,
-        turnOrder: [human.id, ...others],
-        turnPhase: 'roll',
-        lastDice: null,
-        escapedJailByDouble: false,
-        boardState,
-        chanceDeck: shuffleDeck(cards.chance),
-        communityDeck: shuffleDeck(cards.community),
-        chanceIndex: 0,
-        communityIndex: 0,
-        auctionState: null,
-        botThinking: false,
-        logs: [],
-        winnerId: null
-      };
+      return boardState;
     }
 
     function getStateSnapshot() {
@@ -246,7 +219,7 @@
         hostId: room.hostId,
         state: room.state,
         players: [...room.players.values()].map(p => ({ ...p, properties: [...p.properties] })),
-        currentPlayerId: room.turnOrder[room.currentPlayerIndex] || null,
+        currentPlayerId: room.state === 'playing' ? (room.turnOrder[room.currentPlayerIndex] || null) : null,
         turnOrder: [...room.turnOrder],
         turnPhase: room.turnPhase,
         lastDice: room.lastDice,
@@ -263,7 +236,7 @@
     }
 
     function broadcastRoomState() {
-      if (room) emitToClient('room-state', getStateSnapshot());
+      if (room) emitBroadcast('room-state', getStateSnapshot());
     }
 
     function broadcastLog(message) {
@@ -272,7 +245,164 @@
         room.logs.push(entry);
         if (room.logs.length > 60) room.logs.shift();
       }
-      emitToClient('game-log', entry);
+      emitBroadcast('game-log', entry);
+    }
+
+    async function createLobbyRoom(code, hostId, hostName, hostToken) {
+      await ensureDataLoaded();
+      const players = new Map();
+      const hostPlayer = createPlayer(hostId, hostName || 'Nakhoda', hostToken || 'merah', false);
+      players.set(hostId, hostPlayer);
+
+      room = {
+        code,
+        hostId,
+        players,
+        state: 'lobby',
+        currentPlayerIndex: 0,
+        turnOrder: [],
+        turnPhase: 'roll',
+        lastDice: null,
+        escapedJailByDouble: false,
+        boardState: initEmptyBoardState(),
+        chanceDeck: shuffleDeck(cards.chance),
+        communityDeck: shuffleDeck(cards.community),
+        chanceIndex: 0,
+        communityIndex: 0,
+        auctionState: null,
+        botThinking: false,
+        logs: [],
+        winnerId: null
+      };
+      broadcastLog(`🏝️ Room ${code} dibuat oleh ${hostPlayer.name}`);
+      broadcastRoomState();
+      return room;
+    }
+
+    function joinLobbyPlayer(playerId, name, preferredToken) {
+      if (!room) return { success: false, error: 'Room tidak ditemukan' };
+      if (room.state !== 'lobby') return { success: false, error: 'Permainan sudah dimulai' };
+      if (room.players.size >= 4) return { success: false, error: 'Room sudah penuh (maks 4 pemain)' };
+
+      const usedTokens = [...room.players.values()].map(p => p.token);
+      const pref = preferredToken || 'merah';
+      const availableToken = !usedTokens.includes(pref)
+        ? pref
+        : ['merah', 'biru', 'hijau', 'kuning'].find(t => !usedTokens.includes(t));
+
+      if (!availableToken) return { success: false, error: 'Room sudah penuh (maks 4 pemain)' };
+
+      const player = createPlayer(playerId, name, availableToken, false);
+      room.players.set(playerId, player);
+      broadcastLog(`👋 ${player.name} bergabung ke room!`);
+      broadcastRoomState();
+
+      return {
+        success: true,
+        code: room.code,
+        playerId,
+        assignedToken: availableToken,
+        tokenReassigned: availableToken !== pref
+      };
+    }
+
+    function addBotToLobby() {
+      if (!room || room.state !== 'lobby' || room.players.size >= 4) return null;
+      const botNames = ['Bot Garuda', 'Bot Komodo', 'Bot Rajawali', 'Bot Cendrawasih'];
+      const tokens = ['merah', 'biru', 'hijau', 'kuning'];
+      const usedTokens = [...room.players.values()].map(p => p.token);
+      const availToken = tokens.find(t => !usedTokens.includes(t));
+      if (!availToken) return null;
+      const usedNames = [...room.players.values()].map(p => p.name);
+      const botName = botNames.find(n => !usedNames.includes(n)) || `Bot ${room.players.size + 1}`;
+      const bot = createPlayer(`bot-${Math.random().toString(36).slice(2, 8)}`, botName, availToken, true);
+      room.players.set(bot.id, bot);
+      broadcastLog(`🤖 ${botName} ditambahkan ke room`);
+      broadcastRoomState();
+      return bot;
+    }
+
+    function removePlayer(playerId) {
+      if (!room) return;
+      const p = room.players.get(playerId);
+      if (!p) return;
+      if (room.state === 'lobby') {
+        room.players.delete(playerId);
+        broadcastLog(`👋 ${p.name} keluar dari lobby`);
+        broadcastRoomState();
+      } else {
+        p.connected = false;
+        broadcastLog(`⚠️ Koneksi ${p.name} terputus`);
+        broadcastRoomState();
+      }
+    }
+
+    function startLobbyGame(keepHostFirst = false) {
+      if (!room || room.players.size < 2 || room.state !== 'lobby') return false;
+      room.state = 'playing';
+      const allIds = [...room.players.keys()];
+      if (keepHostFirst) {
+        const others = shuffleDeck(allIds.filter(id => id !== room.hostId));
+        room.turnOrder = [room.hostId, ...others];
+      } else {
+        const humans = shuffleDeck(allIds.filter(id => !room.players.get(id).isBot));
+        const bots = shuffleDeck(allIds.filter(id => room.players.get(id).isBot));
+        room.turnOrder = [...humans, ...bots];
+      }
+      room.currentPlayerIndex = 0;
+      room.turnPhase = 'roll';
+      room.lastDice = null;
+      room.boardState = initEmptyBoardState();
+      broadcastLog('🎮 Permainan dimulai! Selamat menjelajahi Nusantara!');
+      broadcastRoomState();
+      setTimeout(() => processBotTurn(), 1200);
+      return true;
+    }
+
+    async function startQuickGame(playerId, name, token, botCount = 3) {
+      await ensureDataLoaded();
+      const players = new Map();
+      const human = createPlayer(playerId, name || 'Nakhoda', token || 'merah', false);
+      players.set(human.id, human);
+
+      const botNames = ['Bot Garuda', 'Bot Komodo', 'Bot Rajawali', 'Bot Cendrawasih'];
+      const tokens = ['merah', 'biru', 'hijau', 'kuning'];
+      const numBots = Math.min(3, Math.max(1, Number(botCount) || 3));
+      for (let i = 0; i < numBots; i++) {
+        const usedTokens = [...players.values()].map(p => p.token);
+        const availToken = tokens.find(t => !usedTokens.includes(t));
+        if (!availToken) break;
+        const usedNames = [...players.values()].map(p => p.name);
+        const botName = botNames.find(n => !usedNames.includes(n)) || `Bot ${players.size + 1}`;
+        const bot = createPlayer(`bot-local-${i + 1}`, botName, availToken, true);
+        players.set(bot.id, bot);
+      }
+
+      const allIds = [...players.keys()];
+      const others = shuffleDeck(allIds.filter(id => id !== human.id));
+      room = {
+        code: 'LOCAL-1',
+        hostId: human.id,
+        players,
+        state: 'playing',
+        currentPlayerIndex: 0,
+        turnOrder: [human.id, ...others],
+        turnPhase: 'roll',
+        lastDice: null,
+        escapedJailByDouble: false,
+        boardState: initEmptyBoardState(),
+        chanceDeck: shuffleDeck(cards.chance),
+        communityDeck: shuffleDeck(cards.community),
+        chanceIndex: 0,
+        communityIndex: 0,
+        auctionState: null,
+        botThinking: false,
+        logs: [],
+        winnerId: null
+      };
+      const entry = { message: `🎮 Mode Lokal dimulai! Kamu melawan ${room.players.size - 1} Bot AI.`, timestamp: Date.now() };
+      room.logs.push(entry);
+      return { success: true, code: room.code, playerId: human.id, logs: room.logs };
     }
 
     function getCurrentPlayer() {
@@ -298,7 +428,7 @@
       const win = checkWinCondition();
       if (win) {
         broadcastRoomState();
-        emitToClient('game-over', { winnerId: win.winner });
+        emitBroadcast('game-over', { winnerId: win.winner });
         return true;
       }
       return false;
@@ -460,7 +590,7 @@
     }
 
     function emitAuctionEnd(result) {
-      emitToClient('auction-end', result);
+      emitBroadcast('auction-end', result);
       if (result.winner) {
         const winner = room.players.get(result.winner);
         const propName = properties[result.propertyId]?.name || 'Properti';
@@ -517,7 +647,7 @@
         return p && !p.isBot && !auction.passed.has(id);
       });
 
-      emitToClient('auction-update', getStateSnapshot().auctionState);
+      emitBroadcast('auction-update', getStateSnapshot().auctionState);
       broadcastRoomState();
       if (activeHumans.length === 0) {
         setTimeout(() => handleBotAuction(), 500);
@@ -566,7 +696,7 @@
           if (player.money < card.value) {
             bankruptPlayer(playerId);
             broadcastLog(`💀 ${player.name} bangkrut!`);
-            emitToClient('player-bankrupt', { playerId });
+            emitBroadcast('player-bankrupt', { playerId });
           } else {
             player.money -= card.value;
           }
@@ -591,7 +721,7 @@
           if (player.money < cost) {
             bankruptPlayer(playerId);
             broadcastLog(`💀 ${player.name} bangkrut karena biaya renovasi!`);
-            emitToClient('player-bankrupt', { playerId });
+            emitBroadcast('player-bankrupt', { playerId });
           } else {
             player.money -= cost;
           }
@@ -607,7 +737,7 @@
             if (p.money <= 0 && paid < card.value) {
               bankruptPlayer(p.id, playerId);
               broadcastLog(`💀 ${p.name} bangkrut!`);
-              emitToClient('player-bankrupt', { playerId: p.id });
+              emitBroadcast('player-bankrupt', { playerId: p.id });
             }
           });
           updateTurnPhaseAfterResolution(player);
@@ -619,7 +749,7 @@
           if (player.money < totalRequired) {
             bankruptPlayer(playerId);
             broadcastLog(`💀 ${player.name} bangkrut!`);
-            emitToClient('player-bankrupt', { playerId });
+            emitBroadcast('player-bankrupt', { playerId });
           } else {
             others.forEach(p => {
               player.money -= card.value;
@@ -656,7 +786,7 @@
                 if (hasHumanBidder) {
                   broadcastLog(`🔨 ${player.name} tidak membeli ${space.name}, lelang dimulai!`);
                   startAuction(player.position);
-                  emitToClient('auction-start', {
+                  emitBroadcast('auction-start', {
                     propertyId: player.position,
                     space,
                     auctionState: getStateSnapshot().auctionState
@@ -669,7 +799,7 @@
               }
             } else {
               room.turnPhase = 'buying';
-              emitToClient('buy-option', {
+              emitBroadcast('buy-option', {
                 playerId,
                 propertyId: player.position,
                 space,
@@ -686,7 +816,7 @@
                 broadcastLog(`💸 ${player.name} membayar sewa ${formatRp(rent)} ke ${owner.name} (${space.name})`);
                 if (player.bankrupt) {
                   broadcastLog(`💀 ${player.name} bangkrut!`);
-                  emitToClient('player-bankrupt', { playerId });
+                  emitBroadcast('player-bankrupt', { playerId });
                 }
               }
             }
@@ -701,7 +831,7 @@
           if (player.money < amount) {
             bankruptPlayer(playerId);
             broadcastLog(`💀 ${player.name} bangkrut karena tidak sanggup membayar ${space.name}!`);
-            emitToClient('player-bankrupt', { playerId });
+            emitBroadcast('player-bankrupt', { playerId });
           } else {
             player.money -= amount;
             broadcastLog(`🏛️ ${player.name} membayar ${space.name} ${formatRp(amount)}`);
@@ -717,7 +847,7 @@
         case 'chance':
         case 'community': {
           const card = drawCard(space.type);
-          emitToClient('card-drawn', { playerId, playerName: player.name, card, type: space.type });
+          emitBroadcast('card-drawn', { playerId, playerName: player.name, card, type: space.type });
           broadcastLog(`🃏 ${player.name} mengambil kartu ${space.type === 'chance' ? 'Kesempatan' : 'Dana Umum'}: "${card.text}"`);
           executeCard(playerId, card, diceTotal);
           break;
@@ -753,7 +883,7 @@
       const winCheck = checkWinCondition();
       if (winCheck) {
         broadcastRoomState();
-        emitToClient('game-over', { winnerId: winCheck.winner });
+        emitBroadcast('game-over', { winnerId: winCheck.winner });
         return;
       }
 
@@ -826,14 +956,14 @@
               } else {
                 bankruptPlayer(currentBot.id);
                 broadcastLog(`💀 ${currentBot.name} bangkrut karena tidak sanggup keluar penjara!`);
-                emitToClient('player-bankrupt', { playerId: currentBot.id });
+                emitBroadcast('player-bankrupt', { playerId: currentBot.id });
                 room.botThinking = false;
                 advanceToNextTurn();
                 return;
               }
             } else {
               broadcastLog(`🤖 ${currentBot.name} gagal keluar penjara (${currentBot.jailTurns}/3)`);
-              emitToClient('dice-result', { playerId: currentBot.id, dice, inJail: true });
+              emitBroadcast('dice-result', { playerId: currentBot.id, dice, inJail: true });
               room.botThinking = false;
               advanceToNextTurn();
               return;
@@ -846,7 +976,7 @@
           if (currentBot.doublesCount >= 3) {
             sendToJail(currentBot);
             broadcastLog(`🤖 ${currentBot.name} melempar 3x double berturut! Masuk penjara!`);
-            emitToClient('dice-result', { playerId: currentBot.id, dice, inJail: true });
+            emitBroadcast('dice-result', { playerId: currentBot.id, dice, inJail: true });
             room.botThinking = false;
             advanceToNextTurn();
             return;
@@ -854,7 +984,7 @@
         }
 
         const moveResult = movePlayer(currentBot, dice.total);
-        emitToClient('dice-result', { playerId: currentBot.id, dice, moveResult });
+        emitBroadcast('dice-result', { playerId: currentBot.id, dice, moveResult });
         if (moveResult.passedStart) {
           broadcastLog(`🤖 ${currentBot.name} melewati START, terima ${formatRp(2000)}`);
         }
@@ -935,17 +1065,319 @@
       return true;
     }
 
-    async function handleQuickStart(payload = {}, callback) {
-      await ensureDataLoaded();
-      const code = 'LOCAL-1';
-      room = createRoom(code, payload.name || 'Nakhoda', payload.token || 'merah', payload.botCount || 3);
-      const logEntry = { message: `🎮 Mode Lokal dimulai! Kamu melawan ${room.players.size - 1} Bot AI.`, timestamp: Date.now() };
-      room.logs.push(logEntry);
-      if (typeof callback === 'function') {
-        callback({ success: true, code, playerId: humanSocketId, logs: room.logs });
+    function handleClientEvent(senderId, event, payload = {}, callback) {
+      if (event === 'rejoin') {
+        if (!room) {
+          if (typeof callback === 'function') callback({ error: 'Room belum aktif' });
+          return;
+        }
+        const p = room.players.get(senderId);
+        if (p) p.connected = true;
+        if (typeof callback === 'function') callback({ newPlayerId: senderId, logs: room.logs });
+        broadcastRoomState();
+        return;
       }
-      broadcastRoomState();
+
+      if (!room) return;
+
+      switch (event) {
+        case 'add-bot':
+          if (senderId === room.hostId) addBotToLobby();
+          break;
+        case 'start-game':
+          if (senderId === room.hostId) startLobbyGame(false);
+          break;
+        case 'roll-dice': {
+          if (room.state !== 'playing' || room.turnPhase !== 'roll') return;
+          const current = getCurrentPlayer();
+          if (!current || current.id !== senderId) return;
+
+          const dice = rollDice();
+          room.lastDice = dice;
+          room.escapedJailByDouble = false;
+          const wasInJail = current.inJail;
+
+          if (current.inJail) {
+            if (dice.isDouble) {
+              current.inJail = false;
+              current.jailTurns = 0;
+              room.escapedJailByDouble = true;
+              broadcastLog(`🔓 ${current.name} melempar double (${dice.d1}+${dice.d2}) dan bebas dari penjara!`);
+            } else {
+              current.jailTurns++;
+              if (current.jailTurns >= 3) {
+                if (current.money >= 500) {
+                  current.money -= 500;
+                  current.inJail = false;
+                  current.jailTurns = 0;
+                  broadcastLog(`🔓 ${current.name} membayar denda wajib ${formatRp(500)} untuk keluar penjara`);
+                } else {
+                  bankruptPlayer(current.id);
+                  broadcastLog(`💀 ${current.name} bangkrut karena tidak sanggup membayar denda penjara!`);
+                  emitBroadcast('player-bankrupt', { playerId: current.id });
+                  advanceToNextTurn();
+                  return;
+                }
+              } else {
+                broadcastLog(`🔒 ${current.name} gagal lempar double di penjara (percobaan ${current.jailTurns}/3)`);
+                room.turnPhase = 'end';
+                emitBroadcast('dice-result', { playerId: current.id, dice, inJail: true });
+                broadcastRoomState();
+                setTimeout(() => advanceToNextTurn(), 1400);
+                return;
+              }
+            }
+          }
+
+          if (dice.isDouble && !(wasInJail && room.escapedJailByDouble)) {
+            current.doublesCount++;
+            if (current.doublesCount >= 3) {
+              sendToJail(current);
+              room.turnPhase = 'end';
+              broadcastLog(`🚔 ${current.name} melempar 3x double berturut-turut! Langsung masuk penjara!`);
+              emitBroadcast('dice-result', { playerId: current.id, dice, inJail: true });
+              broadcastRoomState();
+              setTimeout(() => advanceToNextTurn(), 1400);
+              return;
+            }
+          }
+
+          const moveResult = movePlayer(current, dice.total);
+          const space = properties[current.position];
+          emitBroadcast('dice-result', { playerId: current.id, dice, moveResult });
+          if (moveResult.passedStart) {
+            broadcastLog(`🏁 ${current.name} melewati START, terima ${formatRp(2000)}!`);
+          }
+          broadcastLog(`🎲 ${current.name} melempar ${dice.d1}+${dice.d2}=${dice.total}, mendarat di ${space.name}`);
+          handleLanding(current.id, dice.total);
+          broadcastRoomState();
+          if (checkAndBroadcastGameOver()) return;
+          if (current.bankrupt || current.inJail) {
+            setTimeout(() => advanceToNextTurn(), 1600 + (dice.total * 175));
+          }
+          break;
+        }
+        case 'buy-property': {
+          if (room.state !== 'playing' || room.turnPhase !== 'buying') return;
+          const current = getCurrentPlayer();
+          if (!current || current.id !== senderId) return;
+          const space = properties[current.position];
+          if (payload.buy && buyProperty(senderId, current.position)) {
+            broadcastLog(`🏠 ${current.name} membeli ${space.name} seharga ${formatRp(space.price)}`);
+            updateTurnPhaseAfterResolution(current);
+            broadcastRoomState();
+          } else {
+            broadcastLog(`🔨 ${current.name} melewati ${space.name}, lelang dimulai!`);
+            startAuction(current.position);
+            emitBroadcast('auction-start', {
+              propertyId: current.position,
+              space,
+              auctionState: getStateSnapshot().auctionState
+            });
+            broadcastRoomState();
+            setTimeout(() => handleBotAuction(), 800);
+          }
+          break;
+        }
+        case 'place-bid': {
+          const numericAmount = Number(payload.amount);
+          if (placeBid(senderId, numericAmount)) {
+            const p = room.players.get(senderId);
+            broadcastLog(`🔨 ${p.name} menawar ${formatRp(numericAmount)}`);
+            if (isAuctionComplete()) {
+              emitAuctionEnd(endAuction());
+            } else {
+              emitBroadcast('auction-update', getStateSnapshot().auctionState);
+              broadcastRoomState();
+              setTimeout(() => handleBotAuction(), 700);
+            }
+          }
+          break;
+        }
+        case 'pass-auction': {
+          if (!room.auctionState) return;
+          const p = room.players.get(senderId);
+          if (p) broadcastLog(`🏳️ ${p.name} pass lelang`);
+          room.auctionState.passed.add(senderId);
+          if (isAuctionComplete()) {
+            emitAuctionEnd(endAuction());
+          } else {
+            emitBroadcast('auction-update', getStateSnapshot().auctionState);
+            broadcastRoomState();
+            setTimeout(() => handleBotAuction(), 600);
+          }
+          break;
+        }
+        case 'build-house': {
+          const player = room.players.get(senderId);
+          const space = properties[payload.propertyId];
+          if (player && space && canBuildHouse(senderId, payload.propertyId, room.boardState) && player.money >= space.houseCost) {
+            player.money -= space.houseCost;
+            room.boardState[payload.propertyId].houses++;
+            broadcastLog(`🏠 ${player.name} membangun rumah di ${space.name}`);
+            broadcastRoomState();
+          }
+          break;
+        }
+        case 'build-hotel': {
+          const player = room.players.get(senderId);
+          const space = properties[payload.propertyId];
+          if (player && space && canBuildHotel(senderId, payload.propertyId, room.boardState) && player.money >= space.houseCost) {
+            player.money -= space.houseCost;
+            room.boardState[payload.propertyId].houses = 0;
+            room.boardState[payload.propertyId].hotel = true;
+            broadcastLog(`🏨 ${player.name} membangun hotel di ${space.name}`);
+            broadcastRoomState();
+          }
+          break;
+        }
+        case 'sell-building': {
+          const player = room.players.get(senderId);
+          const space = properties[payload.propertyId];
+          const s = room.boardState[payload.propertyId];
+          if (player && space && s && canSellBuilding(senderId, payload.propertyId, room.boardState)) {
+            const refund = Math.floor(space.houseCost / 2);
+            if (s.hotel) { s.hotel = false; s.houses = 4; } else { s.houses--; }
+            player.money += refund;
+            broadcastLog(`💰 ${player.name} menjual bangunan di ${space.name} (+${formatRp(refund)})`);
+            broadcastRoomState();
+          }
+          break;
+        }
+        case 'mortgage': {
+          const player = room.players.get(senderId);
+          const space = properties[payload.propertyId];
+          const s = room.boardState[payload.propertyId];
+          if (!player || !space || !s || s.ownerId !== senderId || s.mortgaged || s.houses > 0 || s.hotel) break;
+          if (space.group && properties.filter(p => p.group === space.group).some(p => room.boardState[p.id] && (room.boardState[p.id].houses > 0 || room.boardState[p.id].hotel))) break;
+          s.mortgaged = true;
+          player.money += Math.floor(space.price / 2);
+          broadcastLog(`💳 ${player.name} menggadaikan ${space.name}`);
+          broadcastRoomState();
+          break;
+        }
+        case 'unmortgage': {
+          const player = room.players.get(senderId);
+          const space = properties[payload.propertyId];
+          const s = room.boardState[payload.propertyId];
+          if (!player || !space || !s || s.ownerId !== senderId || !s.mortgaged) break;
+          const cost = Math.floor(Math.floor(space.price / 2) * 1.1);
+          if (player.money < cost) break;
+          player.money -= cost;
+          s.mortgaged = false;
+          broadcastLog(`🔓 ${player.name} menebus ${space.name}`);
+          broadcastRoomState();
+          break;
+        }
+        case 'trade-offer': {
+          const target = room.players.get(payload.toId);
+          const offer = payload.offer || {};
+          if (!target) break;
+          if (target.isBot) {
+            const fromVal = (Number(offer.fromMoney) || 0) + (offer.fromProperties || []).reduce((acc, id) => acc + (properties[id]?.price || 0), 0);
+            const toVal = (Number(offer.toMoney) || 0) + (offer.toProperties || []).reduce((acc, id) => acc + (properties[id]?.price || 0), 0);
+            const fairForBot = fromVal >= toVal * 1.1 && target.money >= (Number(offer.toMoney) || 0);
+            setTimeout(() => {
+              if (fairForBot && executeTrade(senderId, target.id, offer)) {
+                const from = room.players.get(senderId);
+                broadcastLog(`🤝 Trade disetujui antara ${from.name} dan ${target.name}!`);
+                broadcastRoomState();
+                emitBroadcast('trade-result', { accepted: true, fromId: senderId, toId: target.id });
+              } else {
+                broadcastLog(`🤖 ${target.name} menolak tawaran trade`);
+                emitBroadcast('trade-result', { accepted: false, fromId: senderId, toId: target.id });
+              }
+            }, 500);
+          } else {
+            emitBroadcast('trade-proposal', { fromId: senderId, toId: payload.toId, offer });
+          }
+          break;
+        }
+        case 'trade-respond': {
+          if (payload.accepted) {
+            if (executeTrade(payload.fromId, senderId, payload.offer)) {
+              const from = room.players.get(payload.fromId);
+              const to = room.players.get(senderId);
+              broadcastLog(`🤝 Trade berhasil antara ${from.name} dan ${to.name}`);
+              broadcastRoomState();
+            }
+          }
+          emitBroadcast('trade-result', { accepted: Boolean(payload.accepted), fromId: payload.fromId, toId: senderId });
+          break;
+        }
+        case 'pay-jail': {
+          if (room.state !== 'playing' || room.turnPhase !== 'roll') break;
+          const current = getCurrentPlayer();
+          if (!current || current.id !== senderId || !current.inJail || current.money < 500) break;
+          current.money -= 500;
+          current.inJail = false;
+          current.jailTurns = 0;
+          broadcastLog(`🔓 ${current.name} membayar ${formatRp(500)} untuk keluar penjara`);
+          broadcastRoomState();
+          break;
+        }
+        case 'use-jail-free': {
+          if (room.state !== 'playing' || room.turnPhase !== 'roll') break;
+          const current = getCurrentPlayer();
+          if (!current || current.id !== senderId || !current.inJail || current.jailFreeCards <= 0) break;
+          current.jailFreeCards--;
+          current.inJail = false;
+          current.jailTurns = 0;
+          broadcastLog(`🃏 ${current.name} menggunakan Kartu Bebas Penjara!`);
+          broadcastRoomState();
+          break;
+        }
+        case 'chat-message': {
+          const p = room.players.get(senderId);
+          const cleanMsg = String(payload.message || '').trim().slice(0, 200);
+          if (p && cleanMsg) {
+            emitBroadcast('chat-message', { playerId: senderId, name: p.name, message: cleanMsg, timestamp: Date.now() });
+          }
+          break;
+        }
+        case 'end-turn': {
+          if (room.state !== 'playing') return;
+          const current = getCurrentPlayer();
+          if (!current || current.id !== senderId) return;
+          if (room.turnPhase === 'buying') room.turnPhase = 'end';
+          if (room.turnPhase === 'auction' && room.auctionState) emitAuctionEnd(endAuction());
+          advanceToNextTurn();
+          break;
+        }
+      }
     }
+
+    return {
+      ensureDataLoaded,
+      createLobbyRoom,
+      joinLobbyPlayer,
+      addBotToLobby,
+      removePlayer,
+      startLobbyGame,
+      startQuickGame,
+      handleClientEvent,
+      getStateSnapshot,
+      getLogs: () => (room ? [...room.logs] : []),
+      onBroadcast(fn) { broadcastHandlers.push(fn); },
+      onDirect(fn) { directHandlers.push(fn); }
+    };
+  }
+
+  function createLocalMonopolySocket(options = {}) {
+    const engine = createLocalMonopolyEngine(options);
+    const listeners = new Map();
+    const humanSocketId = 'local-player-1';
+
+    engine.onBroadcast((event, payload) => {
+      const fns = listeners.get(event) || [];
+      fns.forEach(fn => {
+        try {
+          fn(payload);
+        } catch (err) {
+          console.error('[LocalSocket listener error]', event, err);
+        }
+      });
+    });
 
     return {
       isLocal: true,
@@ -956,272 +1388,27 @@
       },
       emit(event, payload = {}, callback) {
         if (event === 'quick-start') {
-          handleQuickStart(payload, callback).catch(err => {
-            if (typeof callback === 'function') callback({ success: false, error: err.message });
-          });
+          engine.startQuickGame(humanSocketId, payload.name, payload.token, payload.botCount || 3)
+            .then(res => {
+              if (typeof callback === 'function') callback(res);
+              const fns = listeners.get('room-state') || [];
+              const snap = engine.getStateSnapshot();
+              fns.forEach(fn => fn(snap));
+            })
+            .catch(err => {
+              if (typeof callback === 'function') callback({ success: false, error: err.message });
+            });
           return;
         }
-        if (event === 'rejoin') {
-          if (!room) {
-            if (typeof callback === 'function') callback({ error: 'Room lokal belum aktif' });
-            return;
-          }
-          if (typeof callback === 'function') callback({ newPlayerId: humanSocketId, logs: room.logs });
-          broadcastRoomState();
-          return;
-        }
-        if (!room) return;
-
-        switch (event) {
-          case 'roll-dice': {
-            if (room.state !== 'playing' || room.turnPhase !== 'roll') return;
-            const current = getCurrentPlayer();
-            if (!current || current.id !== humanSocketId) return;
-
-            const dice = rollDice();
-            room.lastDice = dice;
-            room.escapedJailByDouble = false;
-            const wasInJail = current.inJail;
-
-            if (current.inJail) {
-              if (dice.isDouble) {
-                current.inJail = false;
-                current.jailTurns = 0;
-                room.escapedJailByDouble = true;
-                broadcastLog(`🔓 ${current.name} melempar double (${dice.d1}+${dice.d2}) dan bebas dari penjara!`);
-              } else {
-                current.jailTurns++;
-                if (current.jailTurns >= 3) {
-                  if (current.money >= 500) {
-                    current.money -= 500;
-                    current.inJail = false;
-                    current.jailTurns = 0;
-                    broadcastLog(`🔓 ${current.name} membayar denda wajib ${formatRp(500)} untuk keluar penjara`);
-                  } else {
-                    bankruptPlayer(current.id);
-                    broadcastLog(`💀 ${current.name} bangkrut karena tidak sanggup membayar denda penjara!`);
-                    emitToClient('player-bankrupt', { playerId: current.id });
-                    advanceToNextTurn();
-                    return;
-                  }
-                } else {
-                  broadcastLog(`🔒 ${current.name} gagal lempar double di penjara (percobaan ${current.jailTurns}/3)`);
-                  room.turnPhase = 'end';
-                  emitToClient('dice-result', { playerId: current.id, dice, inJail: true });
-                  broadcastRoomState();
-                  setTimeout(() => advanceToNextTurn(), 1400);
-                  return;
-                }
-              }
-            }
-
-            if (dice.isDouble && !(wasInJail && room.escapedJailByDouble)) {
-              current.doublesCount++;
-              if (current.doublesCount >= 3) {
-                sendToJail(current);
-                room.turnPhase = 'end';
-                broadcastLog(`🚔 ${current.name} melempar 3x double berturut-turut! Langsung masuk penjara!`);
-                emitToClient('dice-result', { playerId: current.id, dice, inJail: true });
-                broadcastRoomState();
-                setTimeout(() => advanceToNextTurn(), 1400);
-                return;
-              }
-            }
-
-            const moveResult = movePlayer(current, dice.total);
-            const space = properties[current.position];
-            emitToClient('dice-result', { playerId: current.id, dice, moveResult });
-            if (moveResult.passedStart) {
-              broadcastLog(`🏁 ${current.name} melewati START, terima ${formatRp(2000)}!`);
-            }
-            broadcastLog(`🎲 ${current.name} melempar ${dice.d1}+${dice.d2}=${dice.total}, mendarat di ${space.name}`);
-            handleLanding(current.id, dice.total);
-            broadcastRoomState();
-            if (checkAndBroadcastGameOver()) return;
-            if (current.bankrupt || current.inJail) {
-              setTimeout(() => advanceToNextTurn(), 1600 + (dice.total * 175));
-            }
-            break;
-          }
-          case 'buy-property': {
-            if (room.state !== 'playing' || room.turnPhase !== 'buying') return;
-            const current = getCurrentPlayer();
-            if (!current || current.id !== humanSocketId) return;
-            const space = properties[current.position];
-            if (payload.buy && buyProperty(humanSocketId, current.position)) {
-              broadcastLog(`🏠 ${current.name} membeli ${space.name} seharga ${formatRp(space.price)}`);
-              updateTurnPhaseAfterResolution(current);
-              broadcastRoomState();
-            } else {
-              broadcastLog(`🔨 ${current.name} melewati ${space.name}, lelang dimulai!`);
-              startAuction(current.position);
-              emitToClient('auction-start', {
-                propertyId: current.position,
-                space,
-                auctionState: getStateSnapshot().auctionState
-              });
-              broadcastRoomState();
-              setTimeout(() => handleBotAuction(), 800);
-            }
-            break;
-          }
-          case 'place-bid': {
-            const numericAmount = Number(payload.amount);
-            if (placeBid(humanSocketId, numericAmount)) {
-              const p = room.players.get(humanSocketId);
-              broadcastLog(`🔨 ${p.name} menawar ${formatRp(numericAmount)}`);
-              if (isAuctionComplete()) {
-                emitAuctionEnd(endAuction());
-              } else {
-                emitToClient('auction-update', getStateSnapshot().auctionState);
-                broadcastRoomState();
-                setTimeout(() => handleBotAuction(), 700);
-              }
-            }
-            break;
-          }
-          case 'pass-auction': {
-            if (!room.auctionState) return;
-            const p = room.players.get(humanSocketId);
-            if (p) broadcastLog(`🏳️ ${p.name} pass lelang`);
-            room.auctionState.passed.add(humanSocketId);
-            if (isAuctionComplete()) {
-              emitAuctionEnd(endAuction());
-            } else {
-              emitToClient('auction-update', getStateSnapshot().auctionState);
-              broadcastRoomState();
-              setTimeout(() => handleBotAuction(), 600);
-            }
-            break;
-          }
-          case 'build-house': {
-            const player = room.players.get(humanSocketId);
-            const space = properties[payload.propertyId];
-            if (player && space && canBuildHouse(humanSocketId, payload.propertyId, room.boardState) && player.money >= space.houseCost) {
-              player.money -= space.houseCost;
-              room.boardState[payload.propertyId].houses++;
-              broadcastLog(`🏠 ${player.name} membangun rumah di ${space.name}`);
-              broadcastRoomState();
-            }
-            break;
-          }
-          case 'build-hotel': {
-            const player = room.players.get(humanSocketId);
-            const space = properties[payload.propertyId];
-            if (player && space && canBuildHotel(humanSocketId, payload.propertyId, room.boardState) && player.money >= space.houseCost) {
-              player.money -= space.houseCost;
-              room.boardState[payload.propertyId].houses = 0;
-              room.boardState[payload.propertyId].hotel = true;
-              broadcastLog(`🏨 ${player.name} membangun hotel di ${space.name}`);
-              broadcastRoomState();
-            }
-            break;
-          }
-          case 'sell-building': {
-            const player = room.players.get(humanSocketId);
-            const space = properties[payload.propertyId];
-            const s = room.boardState[payload.propertyId];
-            if (player && space && s && canSellBuilding(humanSocketId, payload.propertyId, room.boardState)) {
-              const refund = Math.floor(space.houseCost / 2);
-              if (s.hotel) { s.hotel = false; s.houses = 4; } else { s.houses--; }
-              player.money += refund;
-              broadcastLog(`💰 ${player.name} menjual bangunan di ${space.name} (+${formatRp(refund)})`);
-              broadcastRoomState();
-            }
-            break;
-          }
-          case 'mortgage': {
-            const player = room.players.get(humanSocketId);
-            const space = properties[payload.propertyId];
-            const s = room.boardState[payload.propertyId];
-            if (!player || !space || !s || s.ownerId !== humanSocketId || s.mortgaged || s.houses > 0 || s.hotel) break;
-            if (space.group && properties.filter(p => p.group === space.group).some(p => room.boardState[p.id] && (room.boardState[p.id].houses > 0 || room.boardState[p.id].hotel))) break;
-            s.mortgaged = true;
-            player.money += Math.floor(space.price / 2);
-            broadcastLog(`💳 ${player.name} menggadaikan ${space.name}`);
-            broadcastRoomState();
-            break;
-          }
-          case 'unmortgage': {
-            const player = room.players.get(humanSocketId);
-            const space = properties[payload.propertyId];
-            const s = room.boardState[payload.propertyId];
-            if (!player || !space || !s || s.ownerId !== humanSocketId || !s.mortgaged) break;
-            const cost = Math.floor(Math.floor(space.price / 2) * 1.1);
-            if (player.money < cost) break;
-            player.money -= cost;
-            s.mortgaged = false;
-            broadcastLog(`🔓 ${player.name} menebus ${space.name}`);
-            broadcastRoomState();
-            break;
-          }
-          case 'trade-offer': {
-            const target = room.players.get(payload.toId);
-            const offer = payload.offer || {};
-            if (!target) break;
-            const fromVal = (Number(offer.fromMoney) || 0) + (offer.fromProperties || []).reduce((acc, id) => acc + (properties[id]?.price || 0), 0);
-            const toVal = (Number(offer.toMoney) || 0) + (offer.toProperties || []).reduce((acc, id) => acc + (properties[id]?.price || 0), 0);
-            const fairForBot = fromVal >= toVal * 1.1 && target.money >= (Number(offer.toMoney) || 0);
-            setTimeout(() => {
-              if (fairForBot && executeTrade(humanSocketId, target.id, offer)) {
-                const from = room.players.get(humanSocketId);
-                broadcastLog(`🤝 Trade disetujui antara ${from.name} dan ${target.name}!`);
-                broadcastRoomState();
-                emitToClient('trade-result', { accepted: true, fromId: humanSocketId, toId: target.id });
-              } else {
-                broadcastLog(`🤖 ${target.name} menolak tawaran trade`);
-                emitToClient('trade-result', { accepted: false, fromId: humanSocketId, toId: target.id });
-              }
-            }, 500);
-            break;
-          }
-          case 'pay-jail': {
-            if (room.state !== 'playing' || room.turnPhase !== 'roll') break;
-            const current = getCurrentPlayer();
-            if (!current || current.id !== humanSocketId || !current.inJail || current.money < 500) break;
-            current.money -= 500;
-            current.inJail = false;
-            current.jailTurns = 0;
-            broadcastLog(`🔓 ${current.name} membayar ${formatRp(500)} untuk keluar penjara`);
-            broadcastRoomState();
-            break;
-          }
-          case 'use-jail-free': {
-            if (room.state !== 'playing' || room.turnPhase !== 'roll') break;
-            const current = getCurrentPlayer();
-            if (!current || current.id !== humanSocketId || !current.inJail || current.jailFreeCards <= 0) break;
-            current.jailFreeCards--;
-            current.inJail = false;
-            current.jailTurns = 0;
-            broadcastLog(`🃏 ${current.name} menggunakan Kartu Bebas Penjara!`);
-            broadcastRoomState();
-            break;
-          }
-          case 'chat-message': {
-            const p = room.players.get(humanSocketId);
-            const cleanMsg = String(payload.message || '').trim().slice(0, 200);
-            if (p && cleanMsg) {
-              emitToClient('chat-message', { playerId: humanSocketId, name: p.name, message: cleanMsg, timestamp: Date.now() });
-            }
-            break;
-          }
-          case 'end-turn': {
-            if (room.state !== 'playing') return;
-            const current = getCurrentPlayer();
-            if (!current || current.id !== humanSocketId) return;
-            if (room.turnPhase === 'buying') room.turnPhase = 'end';
-            if (room.turnPhase === 'auction' && room.auctionState) emitAuctionEnd(endAuction());
-            advanceToNextTurn();
-            break;
-          }
-        }
+        engine.handleClientEvent(humanSocketId, event, payload, callback);
       },
-      _getRoomState: getStateSnapshot
+      _getRoomState: () => engine.getStateSnapshot()
     };
   }
 
+  root.createLocalMonopolyEngine = createLocalMonopolyEngine;
   root.createLocalMonopolySocket = createLocalMonopolySocket;
   if (typeof module !== 'undefined' && module.exports) {
-    module.exports = { createLocalMonopolySocket };
+    module.exports = { createLocalMonopolyEngine, createLocalMonopolySocket };
   }
 })(typeof window !== 'undefined' ? window : globalThis);

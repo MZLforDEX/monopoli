@@ -299,5 +299,54 @@ test('Client local-engine runs quick-start, roll-dice, and buy/auction flow offl
   assert.ok(latestState.players[0].position > 0 || latestState.players[0].inJail);
 });
 
+test('Multi-player local host engine supports room creation, guest join with pawn auto-assign, and 2-human turns/trade', async () => {
+  const cardsData = require('../public/data/cards.json');
+  const { createLocalMonopolyEngine } = require('../public/js/local-engine');
+  const engine = createLocalMonopolyEngine({ properties, cards: cardsData });
+
+  const events = [];
+  engine.onBroadcast((ev, payload) => events.push({ ev, payload }));
+
+  await engine.createLobbyRoom('NUS-P2P', 'host-1', 'Andi', 'merah');
+  const joinRes = engine.joinLobbyPlayer('guest-2', 'Budi', 'merah'); // same token 'merah' -> auto-reassigned
+  assert.equal(joinRes.success, true);
+  assert.equal(joinRes.tokenReassigned, true);
+  assert.equal(joinRes.assignedToken, 'biru');
+
+  assert.equal(engine.startLobbyGame(true), true);
+  const snap1 = engine.getStateSnapshot();
+  assert.equal(snap1.state, 'playing');
+  assert.equal(snap1.currentPlayerId, 'host-1');
+
+  // Guest cannot roll out of turn
+  engine.handleClientEvent('guest-2', 'roll-dice');
+  assert.equal(events.filter(e => e.ev === 'dice-result').length, 0);
+
+  // Host rolls and ends turn -> passes to guest-2 (unless double roll)
+  engine.handleClientEvent('host-1', 'roll-dice');
+  assert.equal(events.filter(e => e.ev === 'dice-result').length, 1);
+  engine.handleClientEvent('host-1', 'end-turn');
+  const snap2 = engine.getStateSnapshot();
+  assert.equal(snap2.currentPlayerId, 'guest-2');
+
+  // Direct human-to-human trade proposal & accept
+  engine.handleClientEvent('host-1', 'trade-offer', {
+    toId: 'guest-2',
+    offer: { fromMoney: 500, toMoney: 0, fromProperties: [], toProperties: [] }
+  });
+  const tradeProp = events.find(e => e.ev === 'trade-proposal');
+  assert.ok(tradeProp && tradeProp.payload.fromId === 'host-1' && tradeProp.payload.toId === 'guest-2');
+
+  engine.handleClientEvent('guest-2', 'trade-respond', {
+    fromId: 'host-1',
+    accepted: true,
+    offer: tradeProp.payload.offer
+  });
+  const snap3 = engine.getStateSnapshot();
+  const guest = snap3.players.find(p => p.id === 'guest-2');
+  assert.equal(guest.money, 15500);
+});
+
+
 
 

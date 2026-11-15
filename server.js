@@ -531,12 +531,26 @@ io.on('connection', (socket) => {
     if (room.state !== 'lobby') return callback({ success: false, error: 'Permainan sudah dimulai' });
     if (room.players.size >= 4) return callback({ success: false, error: 'Room sudah penuh (maks 4 pemain)' });
 
-    const player = room.addPlayer(socket.id, name, token);
-    if (!player) return callback({ success: false, error: 'Pion tersebut sudah dipilih pemain lain!' });
+    const usedTokens = [...room.players.values()].map(p => p.token);
+    const preferredToken = token || 'merah';
+    const availableToken = !usedTokens.includes(preferredToken)
+      ? preferredToken
+      : ['merah', 'biru', 'hijau', 'kuning'].find(t => !usedTokens.includes(t));
+
+    if (!availableToken) return callback({ success: false, error: 'Room sudah penuh (maks 4 pemain)' });
+
+    const player = room.addPlayer(socket.id, name, availableToken);
+    if (!player) return callback({ success: false, error: 'Gagal bergabung ke room!' });
 
     playerRooms.set(socket.id, cleanCode);
     socket.join(cleanCode);
-    callback({ success: true, code: cleanCode, playerId: socket.id });
+    callback({
+      success: true,
+      code: cleanCode,
+      playerId: socket.id,
+      assignedToken: availableToken,
+      tokenReassigned: availableToken !== preferredToken
+    });
     broadcastLog(cleanCode, `👋 ${player.name} bergabung ke room!`);
     broadcastRoomState(cleanCode);
   });

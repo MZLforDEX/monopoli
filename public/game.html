@@ -14,7 +14,7 @@
     <!-- Top HUD Bar -->
     <header class="game-header">
         <div class="header-left">
-            <a href="/" class="brand-link" title="Kembali ke Menu Utama">🏝️ <span class="brand-text">Monopoli Nusantara</span></a>
+            <a href="/" target="_top" class="brand-link" title="Kembali ke Menu Utama">🏝️ <span class="brand-text">Monopoli Nusantara</span></a>
             <span class="room-badge mono-num" id="room-code-display">NUS-XXX</span>
         </div>
 
@@ -259,8 +259,8 @@
             <h2>🏆 Permainan Selesai!</h2>
             <p id="winner-text"></p>
             <div class="modal-buttons">
-                <button type="button" class="btn btn-gold" data-start="true" onclick="window.location.href='/?autostart=1'">🔄 Main Lagi</button>
-                <button type="button" class="btn btn-secondary" onclick="window.location.href='/'">🏠 Menu Utama</button>
+                <button type="button" class="btn btn-gold" data-start="true" onclick="(window.top||window).location.href='/?autostart=1'">🔄 Main Lagi</button>
+                <button type="button" class="btn btn-secondary" onclick="(window.top||window).location.href='/'">🏠 Menu Utama</button>
             </div>
         </div>
     </div>

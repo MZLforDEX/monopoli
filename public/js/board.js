@@ -49,6 +49,7 @@ async function loadBoardData() {
   showTileInfo(1, false);
 
   if (window.gameState) {
+    if (typeof updatePlayersPanel === 'function') updatePlayersPanel(window.gameState.players, window.gameState.currentPlayerId);
     if (typeof updatePlayerPositions === 'function') updatePlayerPositions(window.gameState.players);
     if (typeof updateBuildings === 'function') updateBuildings(window.gameState.boardState);
     if (typeof updateMyProperties === 'function') updateMyProperties(window.gameState.players, window.gameState.boardState);

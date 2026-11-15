@@ -143,8 +143,13 @@
             <h2>Lobby Nusantara</h2>
             <button type="button" class="room-code-display" onclick="copyRoomCode()" aria-label="Salin kode room">
                 <span id="lobby-room-code" class="mono-num">NUS-XXX</span>
-                <span class="copy-hint">📋 Ketuk untuk salin kode</span>
+                <span class="copy-hint">📋 Ketuk untuk salin kode room</span>
             </button>
+
+            <div class="invite-actions-row">
+                <button type="button" class="btn btn-secondary btn-small" id="copy-link-btn" onclick="copyInviteLink()">🔗 Salin Link Undangan</button>
+                <span class="connection-mode-badge hidden" id="connection-mode-badge"></span>
+            </div>
 
             <div class="players-list" id="players-list">
                 <!-- Populated by JS -->
@@ -161,7 +166,13 @@
         </div>
     </section>
 
+    <!-- Seamless Game Viewport for P2P Mode (preserves live WebRTC connections across transition) -->
+    <iframe id="game-frame" class="game-frame hidden" title="Papan Permainan Monopoli Nusantara"></iframe>
+
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="https://unpkg.com/mqtt@5.10.3/dist/mqtt.min.js"></script>
+    <script src="js/local-engine.js"></script>
+    <script src="js/p2p.js"></script>
     <script src="js/lobby.js"></script>
 </body>
 </html>

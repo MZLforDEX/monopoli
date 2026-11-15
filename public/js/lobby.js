@@ -43,7 +43,8 @@ let selectedToken = 'merah';
 let currentRoom = null;
 let myPlayerId = null;
 let isHost = false;
-let localLobbyPlayers = [];
+let p2pSocket = null;
+let p2pFrameLaunched = false;
 
 const PAWN_COLORS = {
   merah: '#ef4444',
@@ -54,6 +55,13 @@ const PAWN_COLORS = {
   pinisi: '#38bdf8',
   komodo: '#10b981',
   bajaj: '#facc15'
+};
+
+const PAWN_NAMES = {
+  merah: 'Merah',
+  biru: 'Biru',
+  hijau: 'Hijau',
+  kuning: 'Kuning'
 };
 
 function renderPawnSvg(token, size = 24, idx = 0) {
@@ -76,7 +84,7 @@ function selectToken(el) {
   selectedToken = el.dataset.token;
 }
 
-function showError(msg, durationMs = 4000) {
+function showError(msg, durationMs = 4500) {
   const el = document.getElementById('error-msg');
   if (!el) return;
   el.textContent = msg;
@@ -122,6 +130,37 @@ function launchLocalGame(name, token, botCount = 3) {
   window.location.href = `game.html?${q.toString()}`;
 }
 
+function launchP2PGameFrame(code, playerId) {
+  if (p2pFrameLaunched || !p2pSocket) return;
+  p2pFrameLaunched = true;
+  window.__monopoliP2PBridge = p2pSocket;
+  document.body.dataset.state = 'playing';
+
+  const frame = document.getElementById('game-frame');
+  if (frame) {
+    const q = new URLSearchParams({
+      mode: 'p2p',
+      room: code,
+      playerId
+    });
+    frame.src = `game.html?${q.toString()}`;
+    frame.classList.remove('hidden');
+  }
+}
+
+function attachP2PListeners(p2pSock) {
+  p2pSock.on('room-state', (state) => {
+    renderLobbyPlayers(state.players, state.hostId);
+    if (state.state === 'playing' && currentRoom && myPlayerId) {
+      launchP2PGameFrame(currentRoom, myPlayerId);
+    }
+  });
+
+  p2pSock.on('game-log', ({ message, timestamp }) => {
+    appendLobbyChat(message, timestamp);
+  });
+}
+
 async function quickStartGame() {
   const name = validate(true);
   if (!name) return;
@@ -141,6 +180,13 @@ async function quickStartGame() {
   }
 }
 
+function setModeBadge(text) {
+  const badge = document.getElementById('connection-mode-badge');
+  if (!badge) return;
+  badge.textContent = text;
+  badge.classList.remove('hidden');
+}
+
 async function createRoom() {
   const name = validate(false);
   if (!name) return;
@@ -153,48 +199,82 @@ async function createRoom() {
         myPlayerId = res.playerId;
         isHost = true;
         showLobby();
+        setModeBadge('🟢 Server Multiplayer Aktif');
       } else {
         showError((res && res.error) || 'Gagal membuat room');
       }
     });
-  } else {
-    currentRoom = 'LOCAL-SOLO';
-    myPlayerId = 'local-player-1';
+    return;
+  }
+
+  // Fallback for static hosts (e.g., Vercel): Host-Authoritative WebRTC Room Code via PeerJS
+  try {
+    showError('Membuat room multiplayer...', 2000);
+    const created = await window.P2PNetwork.createP2PHostRoom({ name, token: selectedToken });
+    p2pSocket = created.socket;
+    currentRoom = created.code;
+    myPlayerId = created.playerId;
     isHost = true;
-    localLobbyPlayers = [
-      { id: myPlayerId, name, token: selectedToken, isBot: false }
-    ];
+    attachP2PListeners(p2pSocket);
     showLobby();
-    renderLobbyPlayers(localLobbyPlayers, myPlayerId);
-    appendLobbyChat('ℹ️ Mode Lokal aktif (hosting statis): tambahkan 1–3 Bot AI lalu klik Mulai Permainan.');
+    setModeBadge('🟣 Room P2P Langsung · Bagikan kode');
+    const snap = p2pSocket.getInitialState();
+    if (snap) renderLobbyPlayers(snap.players, snap.hostId);
+    p2pSocket.getLogs().forEach(l => appendLobbyChat(l.message, l.timestamp));
+  } catch (err) {
+    showError(err.message || 'Gagal membuat room');
   }
 }
 
 async function joinRoom() {
   const name = validate(false);
   if (!name) return;
-  const code = document.getElementById('room-code').value.trim().toUpperCase();
+  const rawCode = document.getElementById('room-code').value;
+  const code = window.P2PNetwork ? window.P2PNetwork.normalizeRoomCode(rawCode) : rawCode.trim().toUpperCase();
   if (!code) {
     showError('Masukkan kode room (contoh: NUS-ABC)!');
     return;
   }
 
   const online = await waitForServerStatus();
-  if (!online || !socket) {
-    showError('Gabung Room antar perangkat membutuhkan server Node.js/Socket.IO aktif. Gunakan "Main Cepat vs 3 Bot AI" atau "Buat Room" untuk langsung bermain!', 6000);
+  if (online && socket) {
+    socket.emit('join-room', { code, name, token: selectedToken }, (res) => {
+      if (res && res.success) {
+        currentRoom = res.code;
+        myPlayerId = res.playerId;
+        isHost = false;
+        showLobby();
+        setModeBadge('🟢 Server Multiplayer Aktif');
+        if (res.tokenReassigned && res.assignedToken) {
+          appendLobbyChat(`ℹ️ Pion pilihanmu sudah dipakai, otomatis memakai pion ${PAWN_NAMES[res.assignedToken] || res.assignedToken}.`);
+        }
+      } else {
+        showError((res && res.error) || 'Gagal bergabung ke room');
+      }
+    });
     return;
   }
 
-  socket.emit('join-room', { code, name, token: selectedToken }, (res) => {
-    if (res && res.success) {
-      currentRoom = res.code;
-      myPlayerId = res.playerId;
-      isHost = false;
-      showLobby();
-    } else {
-      showError((res && res.error) || 'Gagal bergabung ke room');
+  // Fallback for static hosts (e.g., Vercel): Join Host's P2P WebRTC Room Code
+  try {
+    showError(`Menghubungkan ke Room ${code}...`, 3000);
+    const joined = await window.P2PNetwork.joinP2PGuestRoom({ code, name, token: selectedToken });
+    p2pSocket = joined.socket;
+    currentRoom = joined.response.code;
+    myPlayerId = joined.response.playerId;
+    isHost = false;
+    attachP2PListeners(p2pSocket);
+    showLobby();
+    setModeBadge('🟣 Terhubung ke Host Room');
+    const snap = p2pSocket.getInitialState();
+    if (snap) renderLobbyPlayers(snap.players, snap.hostId);
+    p2pSocket.getLogs().forEach(l => appendLobbyChat(l.message, l.timestamp));
+    if (joined.response.tokenReassigned && joined.response.assignedToken) {
+      appendLobbyChat(`ℹ️ Pion pilihanmu sudah dipakai, otomatis memakai pion ${PAWN_NAMES[joined.response.assignedToken] || joined.response.assignedToken}.`);
     }
-  });
+  } catch (err) {
+    showError(err.message || 'Gagal bergabung ke room', 6000);
+  }
 }
 
 function showLobby() {
@@ -212,45 +292,51 @@ function copyRoomCode() {
   const el = document.querySelector('.copy-hint');
   if (el) {
     el.textContent = '✅ Kode Tersalin!';
-    setTimeout(() => { el.textContent = '📋 Ketuk untuk salin kode'; }, 2000);
+    setTimeout(() => { el.textContent = '📋 Ketuk untuk salin kode room'; }, 2000);
+  }
+}
+
+function copyInviteLink() {
+  if (!currentRoom) return;
+  const inviteUrl = `${window.location.origin}/?room=${encodeURIComponent(currentRoom)}`;
+  navigator.clipboard?.writeText(inviteUrl).catch(() => {});
+  const btn = document.getElementById('copy-link-btn');
+  if (btn) {
+    btn.textContent = '✅ Link Undangan Disalin!';
+    setTimeout(() => { btn.textContent = '🔗 Salin Link Undangan'; }, 2200);
   }
 }
 
 function addBot() {
-  if (serverOnline && socket) {
-    socket.emit('add-bot');
+  if (p2pSocket) {
+    p2pSocket.emit('add-bot');
     return;
   }
-  if (localLobbyPlayers.length >= 4) return;
-  const botNames = ['Bot Garuda', 'Bot Komodo', 'Bot Rajawali', 'Bot Cendrawasih'];
-  const tokens = ['merah', 'biru', 'hijau', 'kuning'];
-  const usedTokens = localLobbyPlayers.map(p => p.token);
-  const availToken = tokens.find(t => !usedTokens.includes(t));
-  if (!availToken) return;
-  const botName = botNames.find(n => !localLobbyPlayers.some(p => p.name === n)) || `Bot ${localLobbyPlayers.length + 1}`;
-  localLobbyPlayers.push({
-    id: `bot-local-${localLobbyPlayers.length}`,
-    name: botName,
-    token: availToken,
-    isBot: true
-  });
-  renderLobbyPlayers(localLobbyPlayers, myPlayerId);
-  appendLobbyChat(`🤖 ${botName} ditambahkan ke room`);
+  if (serverOnline && socket) {
+    socket.emit('add-bot');
+  }
 }
 
 function startGame() {
-  if (serverOnline && socket) {
-    socket.emit('start-game');
+  if (p2pSocket) {
+    p2pSocket.emit('start-game');
     return;
   }
-  const human = localLobbyPlayers[0];
-  const botCount = Math.max(1, localLobbyPlayers.filter(p => p.isBot).length);
-  launchLocalGame(human?.name || 'Nakhoda', human?.token || selectedToken, botCount);
+  if (serverOnline && socket) {
+    socket.emit('start-game');
+  }
 }
 
-function appendLobbyChat(message) {
+const seenLobbyChatKeys = new Set();
+
+function appendLobbyChat(message, timestamp) {
   const chat = document.getElementById('lobby-chat');
-  if (!chat) return;
+  if (!chat || !message) return;
+  if (timestamp) {
+    const key = `${timestamp}|${message}`;
+    if (seenLobbyChatKeys.has(key)) return;
+    seenLobbyChatKeys.add(key);
+  }
   const div = document.createElement('div');
   div.className = 'chat-msg';
   div.textContent = message;
@@ -278,7 +364,7 @@ function renderLobbyPlayers(players, hostId) {
     for (let i = players.length; i < 4; i++) {
       const div = document.createElement('div');
       div.className = 'player-card empty';
-      div.innerHTML = '<span class="waiting">Slot Kosong · Menunggu pemain atau Bot<span class="dots">...</span></span>';
+      div.innerHTML = '<span class="waiting">Slot Kosong · Bagikan kode room ke teman atau tambah Bot<span class="dots">...</span></span>';
       list.appendChild(div);
     }
   }
@@ -305,10 +391,29 @@ if (socket) {
   });
 }
 
-// Support ?autostart=1 and keyboard shortcut
+// Support ?autostart=1 and ?room=NUS-XXX invite links
 window.addEventListener('DOMContentLoaded', () => {
   document.body.dataset.state = 'title';
   const params = new URLSearchParams(window.location.search);
+  const inviteRoom = params.get('room');
+  if (inviteRoom) {
+    const joinSec = document.getElementById('join-section');
+    const codeInput = document.getElementById('room-code');
+    const nameInput = document.getElementById('player-name');
+    if (joinSec) joinSec.classList.remove('hidden');
+    if (codeInput) {
+      codeInput.value = window.P2PNetwork
+        ? window.P2PNetwork.normalizeRoomCode(inviteRoom)
+        : inviteRoom.trim().toUpperCase();
+    }
+    if (nameInput) {
+      nameInput.value = '';
+      nameInput.placeholder = 'Masukkan namamu untuk masuk room...';
+      nameInput.focus();
+    }
+    return;
+  }
+
   if (params.get('autostart') === '1') {
     quickStartGame();
   }

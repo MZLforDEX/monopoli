@@ -2,17 +2,30 @@ const params = new URLSearchParams(window.location.search);
 let roomCode = params.get('room');
 let myPlayerId = params.get('playerId');
 const isAutoStart = params.get('autostart') === '1';
-const isLocalMode = params.get('mode') === 'local' || typeof io === 'undefined';
+const isP2PMode = params.get('mode') === 'p2p';
+const isLocalMode = params.get('mode') === 'local' || (!isP2PMode && typeof io === 'undefined');
+
+function getParentP2PBridge() {
+  try {
+    if (isP2PMode && window.parent && window.parent.__monopoliP2PBridge) {
+      return window.parent.__monopoliP2PBridge;
+    }
+  } catch (_) {}
+  return null;
+}
 
 function createSocketBridge() {
   const registeredListeners = [];
-  let backend = isLocalMode
-    ? window.createLocalMonopolySocket()
-    : io({ timeout: 1800, reconnectionAttempts: 1 });
+  const p2pBridge = getParentP2PBridge();
+  let backend = p2pBridge
+    ? p2pBridge
+    : (isLocalMode
+      ? window.createLocalMonopolySocket()
+      : io({ timeout: 1800, reconnectionAttempts: 1 }));
   let switchedToLocal = isLocalMode;
 
   function switchToLocal() {
-    if (switchedToLocal || typeof window.createLocalMonopolySocket !== 'function') return false;
+    if (p2pBridge || switchedToLocal || typeof window.createLocalMonopolySocket !== 'function') return false;
     switchedToLocal = true;
     try { backend.disconnect?.(); } catch (_) {}
     backend = window.createLocalMonopolySocket();
@@ -30,6 +43,7 @@ function createSocketBridge() {
     },
     switchToLocal,
     isLocal: () => switchedToLocal,
+    isP2P: () => Boolean(p2pBridge),
     getBackend: () => backend
   };
 }
@@ -81,6 +95,35 @@ function startLocalGameFromParams() {
 }
 
 function initRoomConnection() {
+  if (isP2PMode) {
+    const p2pBridge = getParentP2PBridge();
+    if (!p2pBridge) {
+      (window.top || window).location.href = '/';
+      return;
+    }
+    roomCode = p2pBridge.code || roomCode;
+    myPlayerId = p2pBridge.playerId || myPlayerId;
+    window.myPlayerId = myPlayerId;
+    const codeDisplay = document.getElementById('room-code-display');
+    if (codeDisplay) codeDisplay.textContent = roomCode;
+
+    if (typeof p2pBridge.getLogs === 'function') {
+      p2pBridge.getLogs().forEach(entry => addLogMessage(entry.message, entry.timestamp));
+    }
+    const initState = typeof p2pBridge.getInitialState === 'function' ? p2pBridge.getInitialState() : null;
+    if (initState) {
+      window.gameState = initState;
+      applyRoomStateToUI(initState);
+    }
+    socket.emit('rejoin', { roomCode, playerId: myPlayerId }, (res) => {
+      if (res && res.newPlayerId) {
+        myPlayerId = res.newPlayerId;
+        window.myPlayerId = res.newPlayerId;
+      }
+    });
+    return;
+  }
+
   if (isLocalMode) {
     startLocalGameFromParams();
     return;
