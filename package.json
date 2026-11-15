@@ -4,7 +4,10 @@
   "description": "Monopoli Nusantara Online - Multiplayer Board Game",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "dev": "node server.js",
+    "start": "node server.js",
+    "build": "node --check server.js && node --check game/GameRoom.js && node --check game/rules.js",
+    "lint": "node --check server.js && node --test game/game.test.js"
   },
   "dependencies": {
     "socket.io": "^4.7.0"

@@ -1,6 +1,6 @@
 /**
  * Monopoli Nusantara — 3D Realistic HD Engine
- * Powered by Three.js with PBR materials, procedural models, dynamic lighting, and cinematic camera.
+ * Powered by Three.js with PBR materials, procedural models, dynamic lighting, and responsive mobile camera.
  */
 
 const Board3D = {
@@ -11,6 +11,7 @@ const Board3D = {
   controls: null,
   initialized: false,
   enabled: true,
+  isSoftwareGl: false,
 
   // Meshes & Objects
   boardGroup: null,
@@ -21,20 +22,22 @@ const Board3D = {
   effectsGroup: null,
 
   tileMeshes: [],
-  playerTokens: new Map(), // playerId -> { mesh, targetPos, currentPosIndex, halo, light }
-  buildingMeshes: new Map(), // propertyId -> array of meshes
+  playerTokens: new Map(), // playerId -> { mesh, currentPosIndex }
+  buildingMeshes: new Map(), // propertyId -> group
   diceMeshes: [],
 
-  // Raycaster for tile clicking
+  // Raycaster & Pointer gesture tracking
   raycaster: new THREE.Raycaster(),
   mouse: new THREE.Vector2(),
+  pointerDownPos: { x: 0, y: 0 },
   hoveredTile: null,
   selectedTileIndex: null,
 
   // Camera animation
   cameraAnimating: false,
   cameraTarget: new THREE.Vector3(0, 0, 0),
-  cameraPosTarget: new THREE.Vector3(0, 18, 22),
+  cameraPosTarget: new THREE.Vector3(0, 19, 23),
+  currentViewMode: '3d',
 
   // Lighting
   dirLight: null,
@@ -46,7 +49,7 @@ const Board3D = {
   boardSize: 22,
   boardThickness: 0.8,
   cornerSize: 2.7,
-  regularWidth: 1.84,
+  regularWidth: 1.844,
   regularDepth: 2.7,
 
   // Tile 3D coordinates lookup
@@ -57,37 +60,64 @@ const Board3D = {
     this.container = containerEl || document.getElementById('canvas-3d-wrapper');
     if (!this.container) return;
 
-    const width = this.container.clientWidth || 640;
-    const height = this.container.clientHeight || 640;
+    const width = Math.max(300, this.container.clientWidth || 640);
+    const height = Math.max(300, this.container.clientHeight || 540);
 
-    // 1. Scene
+    // 1. Scene (no distance fog so far tiles stay razor-sharp)
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x0c0f1d);
-    this.scene.fog = new THREE.FogExp2(0x0c0f1d, 0.015);
+    this.scene.background = new THREE.Color(0x0b101e);
+    this.scene.fog = null;
 
-    // 2. Camera
-    this.camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 150);
-    this.camera.position.set(0, 20, 24);
+    // 2. Camera (balanced framing so all 40 tiles & 4 corners fit cleanly on desktop & portrait mobile)
+    const aspect = width / height;
+    const baseFov = aspect < 0.85 ? 54 : 44;
+    this.camera = new THREE.PerspectiveCamera(baseFov, aspect, 0.1, 180);
+    const portraitScale = aspect < 1 ? Math.min(1.95, 0.95 / Math.max(0.45, aspect)) : 1;
+    this.camera.position.set(0, 22.5 * portraitScale, 24.5 * portraitScale);
+    this.cameraTarget.set(0, 0, aspect < 1 ? 0.5 : 1.1);
+    this.cameraPosTarget.copy(this.camera.position);
 
-    // 3. Renderer with HD PBR settings
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
+    // 3. Renderer with Full HD supersampling & sRGB color accuracy
+    this.renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: false,
+      powerPreference: 'high-performance'
+    });
+
+    try {
+      const gl = this.renderer.getContext();
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const rendererInfo = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : '';
+      this.isSoftwareGl = /SwiftShader|Software|llvmpipe/i.test(rendererInfo);
+    } catch (e) {
+      this.isSoftwareGl = false;
+    }
+
+    const rawDpr = window.devicePixelRatio || 1;
+    const targetDpr = this.isSoftwareGl ? Math.max(rawDpr, 1.5) : Math.min(Math.max(rawDpr, 1.5), 2.5);
+    this.maxAnisotropy = Math.min(16, (this.renderer.capabilities && this.renderer.capabilities.getMaxAnisotropy()) || 8);
+
     this.renderer.setSize(width, height);
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.setPixelRatio(targetDpr);
+    this.renderer.outputEncoding = THREE.sRGBEncoding;
+    this.renderer.shadowMap.enabled = !this.isSoftwareGl;
+    if (!this.isSoftwareGl) {
+      this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    }
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.1;
     this.container.appendChild(this.renderer.domElement);
 
     // 4. OrbitControls
     if (typeof THREE.OrbitControls !== 'undefined') {
       this.controls = new THREE.OrbitControls(this.camera, this.renderer.domElement);
       this.controls.enableDamping = true;
-      this.controls.dampingFactor = 0.06;
-      this.controls.maxPolarAngle = Math.PI / 2.05; // don't go under table
-      this.controls.minDistance = 6;
-      this.controls.maxDistance = 45;
-      this.controls.target.set(0, 0, 0);
+      this.controls.dampingFactor = 0.08;
+      this.controls.maxPolarAngle = Math.PI / 2.1;
+      this.controls.minDistance = 7;
+      this.controls.maxDistance = 68;
+      this.controls.target.copy(this.cameraTarget);
+      this.controls.enablePan = false;
     }
 
     // 5. Lighting
@@ -117,7 +147,7 @@ const Board3D = {
     // 9. Create 3D Dice
     this.initDice();
 
-    // 10. Event listeners
+    // 10. Event listeners & ResizeObserver
     this.setupEvents();
 
     this.initialized = true;
@@ -125,37 +155,32 @@ const Board3D = {
     // Render loop
     this.animate = this.animate.bind(this);
     requestAnimationFrame(this.animate);
-
-    console.log('🎮 3D Realistic HD Board initialized successfully!');
   },
 
   setupLighting() {
-    // Soft warm ambient
-    this.ambientLight = new THREE.AmbientLight(0xffeedd, 0.6);
+    this.ambientLight = new THREE.AmbientLight(0xffeedd, 0.7);
     this.scene.add(this.ambientLight);
 
-    // Main chandelier / spotlight over the board
-    this.dirLight = new THREE.DirectionalLight(0xfff5ea, 1.3);
+    const hemiLight = new THREE.HemisphereLight(0xddeeff, 0x1a1410, 0.45);
+    this.scene.add(hemiLight);
+
+    this.dirLight = new THREE.DirectionalLight(0xfff5ea, 1.25);
     this.dirLight.position.set(8, 25, 12);
-    this.dirLight.castShadow = true;
-    this.dirLight.shadow.mapSize.width = 2048;
-    this.dirLight.shadow.mapSize.height = 2048;
-    this.dirLight.shadow.camera.near = 5;
-    this.dirLight.shadow.camera.far = 45;
-    this.dirLight.shadow.camera.left = -15;
-    this.dirLight.shadow.camera.right = 15;
-    this.dirLight.shadow.camera.top = 15;
-    this.dirLight.shadow.camera.bottom = -15;
-    this.dirLight.shadow.bias = -0.0005;
+    if (!this.isSoftwareGl) {
+      this.dirLight.castShadow = true;
+      this.dirLight.shadow.mapSize.width = 1024;
+      this.dirLight.shadow.mapSize.height = 1024;
+      this.dirLight.shadow.camera.near = 5;
+      this.dirLight.shadow.camera.far = 45;
+      this.dirLight.shadow.camera.left = -14;
+      this.dirLight.shadow.camera.right = 14;
+      this.dirLight.shadow.camera.top = 14;
+      this.dirLight.shadow.camera.bottom = -14;
+      this.dirLight.shadow.bias = -0.0005;
+    }
     this.scene.add(this.dirLight);
 
-    // Secondary fill light for luxury highlights
-    const fillLight = new THREE.DirectionalLight(0x7090ff, 0.45);
-    fillLight.position.set(-12, 15, -12);
-    this.scene.add(fillLight);
-
-    // Center jewel spotlight
-    this.spotLight = new THREE.SpotLight(0xffd700, 0.8, 30, Math.PI / 4, 0.3, 1);
+    this.spotLight = new THREE.SpotLight(0xffd700, 0.75, 32, Math.PI / 3.5, 0.35, 1);
     this.spotLight.position.set(0, 16, 0);
     this.spotLight.target.position.set(0, 0, 0);
     this.scene.add(this.spotLight);
@@ -169,31 +194,34 @@ const Board3D = {
     const rWidth = this.regularWidth; // 1.844
     const rDepth = this.regularDepth; // 2.7
     const halfC = cSize / 2;
-    const cornerCenter = bHalf - halfC; // 11 - 1.35 = 9.65
+    const cornerCenter = bHalf - halfC; // 9.65
+
+    // Note: All tiles use local width (X) and depth (Z) before rotation!
+    // Local -Z faces the center of the board (where color bar & houses sit).
 
     // Tile 0: START (Bottom-Right)
     this.tileCoords[0] = { x: cornerCenter, z: cornerCenter, width: cSize, depth: cSize, rot: 0, isCorner: true };
 
-    // Tiles 1-9: Bottom edge (Right to Left)
+    // Tiles 1-9: Bottom edge (Right to Left), facing North (-Z is inward) -> rot = 0
     for (let i = 1; i <= 9; i++) {
       const x = cornerCenter - halfC - (i - 0.5) * rWidth;
       this.tileCoords[i] = { x, z: cornerCenter, width: rWidth, depth: rDepth, rot: 0, isCorner: false };
     }
 
     // Tile 10: Penjara (Bottom-Left)
-    this.tileCoords[10] = { x: -cornerCenter, z: cornerCenter, width: cSize, depth: cSize, rot: Math.PI / 2, isCorner: true };
+    this.tileCoords[10] = { x: -cornerCenter, z: cornerCenter, width: cSize, depth: cSize, rot: -Math.PI / 2, isCorner: true };
 
-    // Tiles 11-19: Left edge (Bottom to Top)
+    // Tiles 11-19: Left edge (Bottom to Top), facing East (+X is inward) -> rot = -Math.PI / 2
     for (let i = 11; i <= 19; i++) {
       const idx = i - 10;
       const z = cornerCenter - halfC - (idx - 0.5) * rWidth;
-      this.tileCoords[i] = { x: -cornerCenter, z, width: rDepth, depth: rWidth, rot: Math.PI / 2, isCorner: false };
+      this.tileCoords[i] = { x: -cornerCenter, z, width: rWidth, depth: rDepth, rot: -Math.PI / 2, isCorner: false };
     }
 
     // Tile 20: Parkir Bebas (Top-Left)
     this.tileCoords[20] = { x: -cornerCenter, z: -cornerCenter, width: cSize, depth: cSize, rot: Math.PI, isCorner: true };
 
-    // Tiles 21-29: Top edge (Left to Right)
+    // Tiles 21-29: Top edge (Left to Right), facing South (+Z is inward) -> rot = Math.PI
     for (let i = 21; i <= 29; i++) {
       const idx = i - 20;
       const x = -cornerCenter + halfC + (idx - 0.5) * rWidth;
@@ -201,22 +229,22 @@ const Board3D = {
     }
 
     // Tile 30: Masuk Penjara (Top-Right)
-    this.tileCoords[30] = { x: cornerCenter, z: -cornerCenter, width: cSize, depth: cSize, rot: -Math.PI / 2, isCorner: true };
+    this.tileCoords[30] = { x: cornerCenter, z: -cornerCenter, width: cSize, depth: cSize, rot: Math.PI / 2, isCorner: true };
 
-    // Tiles 31-39: Right edge (Top to Bottom)
+    // Tiles 31-39: Right edge (Top to Bottom), facing West (-X is inward) -> rot = Math.PI / 2
     for (let i = 31; i <= 39; i++) {
       const idx = i - 30;
       const z = -cornerCenter + halfC + (idx - 0.5) * rWidth;
-      this.tileCoords[i] = { x: cornerCenter, z, width: rDepth, depth: rWidth, rot: -Math.PI / 2, isCorner: false };
+      this.tileCoords[i] = { x: cornerCenter, z, width: rWidth, depth: rDepth, rot: Math.PI / 2, isCorner: false };
     }
   },
 
   buildTableAndBoard() {
     // 1. Luxury Table Surface beneath the board
-    const tableGeo = new THREE.CylinderGeometry(28, 28, 1, 64);
+    const tableGeo = new THREE.CylinderGeometry(28, 28, 1, 48);
     const tableMat = new THREE.MeshStandardMaterial({
-      color: 0x181310,
-      roughness: 0.45,
+      color: 0x16110e,
+      roughness: 0.5,
       metalness: 0.15
     });
     const tableMesh = new THREE.Mesh(tableGeo, tableMat);
@@ -224,20 +252,20 @@ const Board3D = {
     tableMesh.receiveShadow = true;
     this.boardGroup.add(tableMesh);
 
-    // Outer table decorative leather ring
-    const ringGeo = new THREE.TorusGeometry(26, 0.6, 16, 64);
-    const ringMat = new THREE.MeshStandardMaterial({ color: 0x2b1c12, roughness: 0.7, metalness: 0.2 });
+    // Outer table decorative brass/wood ring
+    const ringGeo = new THREE.TorusGeometry(26, 0.55, 12, 48);
+    const ringMat = new THREE.MeshStandardMaterial({ color: 0x2b1c12, roughness: 0.65, metalness: 0.2 });
     const ringMesh = new THREE.Mesh(ringGeo, ringMat);
     ringMesh.rotation.x = Math.PI / 2;
     ringMesh.position.y = -0.05;
     this.boardGroup.add(ringMesh);
 
-    // 2. Thick Mahogany Board Base with beveled bevel edge
+    // 2. Thick Mahogany Board Base
     const boardBaseGeo = new THREE.BoxGeometry(this.boardSize + 0.9, this.boardThickness, this.boardSize + 0.9);
     const boardBaseMat = new THREE.MeshStandardMaterial({
-      color: 0x23140e,
-      roughness: 0.35,
-      metalness: 0.2
+      color: 0x24140e,
+      roughness: 0.38,
+      metalness: 0.18
     });
     const boardBase = new THREE.Mesh(boardBaseGeo, boardBaseMat);
     boardBase.position.y = 0;
@@ -245,84 +273,86 @@ const Board3D = {
     boardBase.castShadow = true;
     this.boardGroup.add(boardBase);
 
-    // Golden perimeter trim
-    const trimGeo = new THREE.BoxGeometry(this.boardSize + 0.95, 0.12, this.boardSize + 0.95);
+    // Golden perimeter trim (sits flush around base edge, below center felt and tiles)
+    const trimGeo = new THREE.BoxGeometry(this.boardSize + 0.96, 0.12, this.boardSize + 0.96);
     const trimMat = new THREE.MeshStandardMaterial({
-      color: 0xd4af37, // Metallic Gold
-      roughness: 0.2,
-      metalness: 0.85
+      color: 0xe5b842,
+      roughness: 0.25,
+      metalness: 0.75
     });
     const trimMesh = new THREE.Mesh(trimGeo, trimMat);
-    trimMesh.position.y = this.boardThickness / 2 + 0.02;
+    trimMesh.position.y = this.boardThickness / 2 - 0.05;
     this.boardGroup.add(trimMesh);
 
-    // 3. Center Board Felt / Canvas
+    // 3. Center Board Felt / Canvas (2K Full-HD texture + max anisotropic filtering)
     const centerSize = this.boardSize - (this.cornerSize * 2);
-    const centerCanvas = this.generateCenterCanvas(centerSize * 40);
-    const centerTexture = new THREE.CanvasTexture(centerCanvas);
-    centerTexture.anisotropy = 8;
+    const centerCanvas = this.generateCenterCanvas(1536);
+    const centerTexture = this.createCrispTexture(centerCanvas);
 
     const centerGeo = new THREE.PlaneGeometry(centerSize, centerSize);
     const centerMat = new THREE.MeshStandardMaterial({
       map: centerTexture,
-      roughness: 0.7,
-      metalness: 0.1
+      roughness: 0.78,
+      metalness: 0.04
     });
     const centerMesh = new THREE.Mesh(centerGeo, centerMat);
     centerMesh.rotation.x = -Math.PI / 2;
-    centerMesh.position.y = this.boardThickness / 2 + 0.03;
+    centerMesh.position.y = this.boardThickness / 2 + 0.025;
     centerMesh.receiveShadow = true;
     this.boardGroup.add(centerMesh);
-
-    // Thin inner gold border around center felt
-    const innerTrimGeo = new THREE.RingGeometry(centerSize * 0.49, centerSize * 0.505, 4);
-    const innerTrimMat = new THREE.MeshStandardMaterial({ color: 0xd4af37, roughness: 0.3, metalness: 0.8 });
-    const innerTrimMesh = new THREE.Mesh(innerTrimGeo, innerTrimMat);
-    innerTrimMesh.rotation.x = -Math.PI / 2;
-    innerTrimMesh.rotation.z = Math.PI / 4;
-    innerTrimMesh.position.y = this.boardThickness / 2 + 0.035;
-    this.boardGroup.add(innerTrimMesh);
   },
 
-  generateCenterCanvas(size = 800) {
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
+  createCrispTexture(canvas) {
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.anisotropy = this.maxAnisotropy || 8;
+    texture.minFilter = THREE.LinearMipmapLinearFilter;
+    texture.magFilter = THREE.LinearFilter;
+    texture.encoding = THREE.sRGBEncoding;
+    texture.needsUpdate = true;
+    return texture;
+  },
 
-    // Luxurious gradient background
+  generateCenterCanvas(pixelSize = 1536) {
+    const size = 768;
+    const scale = pixelSize / size;
+    const canvas = document.createElement('canvas');
+    canvas.width = pixelSize;
+    canvas.height = pixelSize;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.scale(scale, scale);
+
     const grad = ctx.createRadialGradient(size / 2, size / 2, size * 0.05, size / 2, size / 2, size * 0.7);
-    grad.addColorStop(0, '#1c2541');
-    grad.addColorStop(0.65, '#0b132b');
-    grad.addColorStop(1, '#070b1a');
+    grad.addColorStop(0, '#18243c');
+    grad.addColorStop(0.65, '#0d1528');
+    grad.addColorStop(1, '#080c18');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, size, size);
 
-    // Indonesian Batik / Geometric pattern ring
+    // Outer gold frame
+    ctx.strokeStyle = 'rgba(229, 184, 66, 0.45)';
+    ctx.lineWidth = 6;
+    ctx.strokeRect(20, 20, size - 40, size - 40);
+
     ctx.save();
     ctx.translate(size / 2, size / 2);
 
-    // Outer ornamental ring
-    ctx.strokeStyle = 'rgba(212, 175, 55, 0.35)';
-    ctx.lineWidth = 4;
+    // Compass circle
+    ctx.strokeStyle = 'rgba(229, 184, 66, 0.3)';
+    ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(0, 0, size * 0.42, 0, Math.PI * 2);
+    ctx.arc(0, 0, size * 0.39, 0, Math.PI * 2);
     ctx.stroke();
 
-    ctx.strokeStyle = 'rgba(212, 175, 55, 0.2)';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(0, 0, size * 0.38, 0, Math.PI * 2);
-    ctx.stroke();
-
-    // 8-Point Compass / Wind Rose Star
-    ctx.fillStyle = 'rgba(212, 175, 55, 0.12)';
+    // 8-Point Surya Majapahit / Wind Rose Star
+    ctx.fillStyle = 'rgba(229, 184, 66, 0.1)';
     for (let r = 0; r < 8; r++) {
       ctx.beginPath();
       ctx.moveTo(0, 0);
       const isMajor = r % 2 === 0;
-      const rayLen = isMajor ? size * 0.36 : size * 0.25;
-      const rayWidth = isMajor ? 28 : 16;
+      const rayLen = isMajor ? size * 0.35 : size * 0.24;
+      const rayWidth = isMajor ? 26 : 15;
       ctx.lineTo(-rayWidth, 0);
       ctx.lineTo(0, -rayLen);
       ctx.lineTo(rayWidth, 0);
@@ -331,44 +361,54 @@ const Board3D = {
       ctx.rotate(Math.PI / 4);
     }
 
-    // Monopoli Nusantara Emblem & Typography
-    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)';
-    ctx.shadowBlur = 12;
+    // Community & Chance deck slots on the board felt
+    ctx.save();
+    ctx.rotate(-Math.PI / 4);
+    // Chance deck slot (top-left diagonal)
+    ctx.strokeStyle = 'rgba(245, 158, 11, 0.45)';
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.08)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.roundRect(-210, -250, 140, 90, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(245, 158, 11, 0.75)';
+    ctx.font = '700 16px "Plus Jakarta Sans", sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('KESEMPATAN', -140, -200);
 
-    // Island emoji/crest
-    ctx.font = 'bold 72px Inter, sans-serif';
+    // Community deck slot (bottom-right diagonal)
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.08)';
+    ctx.beginPath();
+    ctx.roundRect(70, 160, 140, 90, 8);
+    ctx.fill();
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(56, 189, 248, 0.75)';
+    ctx.fillText('DANA UMUM', 140, 210);
+    ctx.restore();
+
+    // Center Emblem Typography
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.85)';
+    ctx.shadowBlur = 14;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText('🏝️', 0, -size * 0.11);
 
-    // MONOPOLI text
     ctx.fillStyle = '#ffffff';
-    ctx.font = '900 62px Inter, sans-serif';
-    ctx.letterSpacing = '6px';
-    ctx.fillText('MONOPOLI', 0, -size * 0.01);
+    ctx.font = '800 56px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('MONOPOLI', 0, -size * 0.03);
 
-    // NUSANTARA gold gradient text
-    const textGrad = ctx.createLinearGradient(-size * 0.3, 0, size * 0.3, 0);
-    textGrad.addColorStop(0, '#f39c12');
-    textGrad.addColorStop(0.5, '#f1c40f');
-    textGrad.addColorStop(1, '#e67e22');
+    const textGrad = ctx.createLinearGradient(-size * 0.28, 0, size * 0.28, 0);
+    textGrad.addColorStop(0, '#f59e0b');
+    textGrad.addColorStop(0.5, '#fde047');
+    textGrad.addColorStop(1, '#ea580c');
     ctx.fillStyle = textGrad;
-    ctx.font = '900 66px Inter, sans-serif';
-    ctx.fillText('NUSANTARA', 0, size * 0.08);
+    ctx.font = '900 62px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('NUSANTARA', 0, size * 0.06);
 
-    // Subtitle tagline
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.65)';
-    ctx.font = '600 24px Inter, sans-serif';
-    ctx.letterSpacing = '3px';
-    ctx.fillText('JELAJAHI INDONESIA, KUASAI NUSANTARA', 0, size * 0.17);
-
-    // 4 Corner decorative accents
-    ctx.fillStyle = 'rgba(212, 175, 55, 0.4)';
-    ctx.font = '32px Inter';
-    ctx.fillText('🚲', -size * 0.34, -size * 0.34);
-    ctx.fillText('⛵', size * 0.34, -size * 0.34);
-    ctx.fillText('🛺', -size * 0.34, size * 0.34);
-    ctx.fillText('🦎', size * 0.34, size * 0.34);
+    ctx.fillStyle = 'rgba(226, 232, 240, 0.65)';
+    ctx.font = '600 20px "Plus Jakarta Sans", sans-serif';
+    ctx.fillText('EDISI KEPULAUAN INDONESIA', 0, size * 0.14);
 
     ctx.restore();
     return canvas;
@@ -377,7 +417,6 @@ const Board3D = {
   populateTiles(propertiesData) {
     if (!propertiesData || propertiesData.length === 0) return;
 
-    // Clear old tiles if any
     while (this.tilesGroup.children.length > 0) {
       this.tilesGroup.remove(this.tilesGroup.children[0]);
     }
@@ -391,43 +430,39 @@ const Board3D = {
       this.tilesGroup.add(tileMesh);
       this.tileMeshes[index] = tileMesh;
     });
-
-    console.log(`✅ Rendered 40 3D HD Tiles on the board!`);
   },
 
   createTileMesh(tileData, coord, index) {
     const tileGroup = new THREE.Group();
     tileGroup.position.set(coord.x, this.boardThickness / 2 + 0.04, coord.z);
+    tileGroup.rotation.y = coord.rot;
     tileGroup.datasetIndex = index;
 
     const w = coord.width;
     const d = coord.depth;
     const h = 0.06;
 
-    // 1. Tile Base Mesh
     const tileGeo = new THREE.BoxGeometry(w * 0.98, h, d * 0.98);
     const tileCanvas = this.generateTileTexture(tileData, coord);
-    const texture = new THREE.CanvasTexture(tileCanvas);
-    texture.anisotropy = 8;
+    const texture = this.createCrispTexture(tileCanvas);
 
-    // Materials: top surface has HD texture, sides are slate
-    const sideMat = new THREE.MeshStandardMaterial({ color: 0x1c2236, roughness: 0.5, metalness: 0.3 });
+    const sideMat = new THREE.MeshStandardMaterial({ color: 0x1c2438, roughness: 0.5, metalness: 0.25 });
     const topMat = new THREE.MeshStandardMaterial({
       map: texture,
-      roughness: 0.45,
-      metalness: 0.15
+      roughness: 0.58,
+      metalness: 0.04
     });
 
     const materials = [sideMat, sideMat, topMat, sideMat, sideMat, sideMat];
     const mesh = new THREE.Mesh(tileGeo, materials);
     mesh.receiveShadow = true;
-    mesh.castShadow = true;
+    mesh.castShadow = false;
     tileGroup.add(mesh);
 
-    // 2. Selection / Hover Glow Frame
-    const frameGeo = new THREE.BoxGeometry(w * 0.99, h + 0.02, d * 0.99);
+    // Selection / Hover Glow Frame
+    const frameGeo = new THREE.BoxGeometry(w * 0.995, h + 0.025, d * 0.995);
     const frameMat = new THREE.MeshBasicMaterial({
-      color: 0xffd700,
+      color: 0xfbbf24,
       wireframe: true,
       visible: false
     });
@@ -435,534 +470,437 @@ const Board3D = {
     tileGroup.add(frame);
     tileGroup.highlightFrame = frame;
 
+    // Owner badge strip on outer edge of tile
+    const ownerGeo = new THREE.BoxGeometry(w * 0.85, 0.05, 0.14);
+    const ownerMat = new THREE.MeshBasicMaterial({ color: 0xffffff, visible: false });
+    const ownerStrip = new THREE.Mesh(ownerGeo, ownerMat);
+    ownerStrip.position.set(0, h / 2 + 0.02, d * 0.45);
+    tileGroup.add(ownerStrip);
+    tileGroup.ownerStrip = ownerStrip;
+
     tileGroup.tileData = tileData;
     tileGroup.coord = coord;
     return tileGroup;
   },
 
+  drawFittedText(ctx, text, cx, cy, maxWidth, startSize, minSize = 18, weight = '800', family = '"Plus Jakarta Sans", sans-serif') {
+    let fontSize = startSize;
+    ctx.font = `${weight} ${fontSize}px ${family}`;
+    while (ctx.measureText(text).width > maxWidth && fontSize > minSize) {
+      fontSize -= 1;
+      ctx.font = `${weight} ${fontSize}px ${family}`;
+    }
+    ctx.fillText(text, cx, cy, maxWidth);
+  },
+
+  drawWrappedFittedTitle(ctx, text, cx, topY, maxWidth, startSize = 31) {
+    const words = String(text || '').trim().split(/\s+/);
+    let lines = [text];
+
+    if (words.length >= 2) {
+      if (words.length === 2) {
+        // Keep short 2-word names on 1 line if they comfortably fit
+        ctx.font = `800 ${startSize}px "Plus Jakarta Sans", sans-serif`;
+        if (ctx.measureText(text).width > maxWidth * 0.92) {
+          lines = [words[0], words[1]];
+        }
+      } else {
+        const mid = Math.ceil(words.length / 2);
+        lines = [words.slice(0, mid).join(' '), words.slice(mid).join(' ')];
+      }
+    }
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    if (lines.length === 1) {
+      this.drawFittedText(ctx, lines[0], cx, topY + 20, maxWidth, startSize, 18, '800');
+    } else {
+      this.drawFittedText(ctx, lines[0], cx, topY + 6, maxWidth, startSize - 3, 17, '800');
+      this.drawFittedText(ctx, lines[1], cx, topY + 36, maxWidth, startSize - 3, 17, '800');
+    }
+  },
+
   generateTileTexture(tile, coord) {
     const canvas = document.createElement('canvas');
     const isCorner = coord.isCorner;
+    const texScale = 2; // 720x1024 regular tiles, 1024x1024 corner tiles for crisp Full HD clarity
     const cw = isCorner ? 512 : 360;
-    const ch = isCorner ? 512 : 512;
-    canvas.width = cw;
-    canvas.height = ch;
+    const ch = 512;
+    canvas.width = cw * texScale;
+    canvas.height = ch * texScale;
     const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.scale(texScale, texScale);
 
-    // Tile orientation: bottom=0, left=PI/2, top=PI, right=-PI/2
-    // We draw facing UP (canvas coordinates), and rotation handles orientation.
-
-    // 1. Background
-    ctx.fillStyle = '#181e33';
+    // Deep slate card base
+    ctx.fillStyle = '#0f172a';
     ctx.fillRect(0, 0, cw, ch);
 
-    // Subtle inner border
-    ctx.strokeStyle = 'rgba(255, 255, 255, 0.08)';
-    ctx.lineWidth = 4;
-    ctx.strokeRect(4, 4, cw - 8, ch - 8);
+    // Outer & inner clean border frames
+    ctx.strokeStyle = isCorner ? '#e5b842' : 'rgba(226, 232, 240, 0.24)';
+    ctx.lineWidth = isCorner ? 8 : 5;
+    ctx.strokeRect(6, 6, cw - 12, ch - 12);
+
+    ctx.strokeStyle = 'rgba(251, 191, 36, 0.18)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(14, 14, cw - 28, ch - 28);
+
+    const safeMaxTextWidth = cw - 52;
 
     if (tile.type === 'property') {
-      // Color bar at top
-      ctx.fillStyle = tile.color || '#999';
-      ctx.fillRect(6, 6, cw - 12, ch * 0.26);
+      // 1. Top Color Group Header Band (inward edge where houses sit)
+      const bandH = Math.round(ch * 0.21);
+      ctx.fillStyle = tile.color || '#64748b';
+      ctx.fillRect(10, 10, cw - 20, bandH);
 
-      // Thin separator
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.3)';
-      ctx.fillRect(6, ch * 0.26, cw - 12, 4);
+      // Subtle glossy highlight on color band
+      const bandGrad = ctx.createLinearGradient(0, 10, 0, 10 + bandH);
+      bandGrad.addColorStop(0, 'rgba(255, 255, 255, 0.22)');
+      bandGrad.addColorStop(1, 'rgba(0, 0, 0, 0.22)');
+      ctx.fillStyle = bandGrad;
+      ctx.fillRect(10, 10, cw - 20, bandH);
 
-      // City Name
+      // Gold divider line below color band
+      ctx.fillStyle = '#fbbf24';
+      ctx.fillRect(10, 10 + bandH, cw - 20, 4);
+
+      // 2. City Name (Auto-fitted inside safe padding)
       ctx.fillStyle = '#ffffff';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'top';
-      ctx.font = 'bold 36px Inter, sans-serif';
-      
-      const words = tile.name.split(' ');
-      if (words.length > 1 && tile.name.length > 10) {
-        ctx.fillText(words[0], cw / 2, ch * 0.33);
-        ctx.fillText(words.slice(1).join(' '), cw / 2, ch * 0.43);
-      } else {
-        ctx.fillText(tile.name, cw / 2, ch * 0.36);
+      this.drawWrappedFittedTitle(ctx, tile.name.toUpperCase(), cw / 2, bandH + 28, safeMaxTextWidth, 32);
+
+      // 3. Iconic City Landmark Illustration Frame
+      const artX = 26;
+      const artY = 198;
+      const artW = cw - 52;
+      const artH = 210;
+      if (typeof NusantaraLandmarks !== 'undefined') {
+        NusantaraLandmarks.drawLandmarkOnCanvas(ctx, tile, artX, artY, artW, artH, true);
       }
 
-      // Landmark / City Icon
-      ctx.font = '54px sans-serif';
-      ctx.textBaseline = 'middle';
-      const cityIcon = tile.group === 'brown' ? '🕌' :
-                       tile.group === 'light-blue' ? '🌊' :
-                       tile.group === 'purple' ? '🏛️' :
-                       tile.group === 'orange' ? '🏙️' :
-                       tile.group === 'red' ? '🌋' :
-                       tile.group === 'yellow' ? '🌴' :
-                       tile.group === 'green' ? '🌳' : '💎';
-      ctx.fillText(cityIcon, cw / 2, ch * 0.65);
+      // 4. Bottom Price Pill inside border
+      const pillW = cw - 64;
+      const pillH = 52;
+      const pillX = 32;
+      const pillY = ch - 76;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(pillX, pillY, pillW, pillH, 12);
+      } else {
+        ctx.rect(pillX, pillY, pillW, pillH);
+      }
+      ctx.fill();
+      ctx.stroke();
 
-      // Price Tag at Bottom
-      ctx.fillStyle = '#f1c40f';
-      ctx.font = 'bold 34px Inter, sans-serif';
-      ctx.textBaseline = 'bottom';
-      ctx.fillText(`Rp${tile.price}rb`, cw / 2, ch - 16);
+      ctx.fillStyle = '#fbbf24';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawFittedText(
+        ctx,
+        `Rp${tile.price.toLocaleString('id-ID')}rb`,
+        cw / 2,
+        pillY + pillH / 2 + 1,
+        pillW - 20,
+        30,
+        18,
+        '800',
+        '"JetBrains Mono", monospace'
+      );
 
     } else if (isCorner) {
-      // Corner Tiles
-      ctx.fillStyle = '#141829';
-      ctx.fillRect(0, 0, cw, ch);
-      ctx.strokeStyle = '#d4af37';
-      ctx.lineWidth = 8;
-      ctx.strokeRect(8, 8, cw - 16, ch - 16);
+      // Corner Tiles (START, Penjara, Parkir Bebas, Ke Penjara)
+      const cornerMeta = {
+        'start':        { title: 'START',        sub: 'GAJI +Rp2.000rb', color: '#10b981' },
+        'jail-visit':   { title: 'PENJARA',      sub: 'KUNJUNGAN',       color: '#f97316' },
+        'free-parking': { title: 'PARKIR BEBAS', sub: 'ZONA AMAN',       color: '#38bdf8' },
+        'go-to-jail':   { title: 'KE PENJARA',   sub: 'DITAHAN',         color: '#ef4444' }
+      }[tile.type] || { title: tile.name.toUpperCase(), sub: '', color: '#fbbf24' };
 
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      if (tile.type === 'start') {
-        ctx.font = 'bold 80px sans-serif';
-        ctx.fillText('🏁', cw / 2, ch * 0.32);
-        ctx.fillStyle = '#2ecc71';
-        ctx.font = '900 58px Inter, sans-serif';
-        ctx.fillText('START', cw / 2, ch * 0.58);
-        ctx.fillStyle = '#f1c40f';
-        ctx.font = 'bold 26px Inter, sans-serif';
-        ctx.fillText('TERIMA Rp2JT', cw / 2, ch * 0.78);
-      } else if (tile.type === 'jail-visit') {
-        ctx.font = 'bold 80px sans-serif';
-        ctx.fillText('🔒', cw / 2, ch * 0.32);
-        ctx.fillStyle = '#e74c3c';
-        ctx.font = '900 52px Inter, sans-serif';
-        ctx.fillText('PENJARA', cw / 2, ch * 0.58);
-        ctx.fillStyle = '#bdc3c7';
-        ctx.font = 'bold 26px Inter, sans-serif';
-        ctx.fillText('HANYA BERKUNJUNG', cw / 2, ch * 0.78);
-      } else if (tile.type === 'free-parking') {
-        ctx.font = 'bold 80px sans-serif';
-        ctx.fillText('🅿️', cw / 2, ch * 0.32);
-        ctx.fillStyle = '#3498db';
-        ctx.font = '900 50px Inter, sans-serif';
-        ctx.fillText('PARKIR BEBAS', cw / 2, ch * 0.58);
-        ctx.fillStyle = '#bdc3c7';
-        ctx.font = 'bold 26px Inter, sans-serif';
-        ctx.fillText('ISTIRAHAT', cw / 2, ch * 0.78);
-      } else if (tile.type === 'go-to-jail') {
-        ctx.font = 'bold 80px sans-serif';
-        ctx.fillText('🚔', cw / 2, ch * 0.32);
-        ctx.fillStyle = '#e74c3c';
-        ctx.font = '900 48px Inter, sans-serif';
-        ctx.fillText('KE PENJARA', cw / 2, ch * 0.58);
-        ctx.fillStyle = '#f39c12';
-        ctx.font = 'bold 26px Inter, sans-serif';
-        ctx.fillText('LANGSUNG MASUK', cw / 2, ch * 0.78);
-      }
-    } else {
-      // Airport, Utility, Tax, Chance, Community
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-
-      const typeIcons = {
-        'airport': '✈️',
-        'utility': tile.name === 'PLN' ? '⚡' : '💧',
-        'tax': '💸',
-        'chance': '❓',
-        'community': '💳'
-      };
-
-      ctx.font = '64px sans-serif';
-      ctx.fillText(typeIcons[tile.type] || '🎲', cw / 2, ch * 0.35);
+      // Top Corner Header Banner (strictly inside inner border)
+      ctx.fillStyle = cornerMeta.color;
+      ctx.fillRect(18, 18, cw - 36, 72);
 
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 30px Inter, sans-serif';
-      ctx.fillText(tile.name, cw / 2, ch * 0.62);
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawFittedText(ctx, cornerMeta.title, cw / 2, 54, cw - 80, 38, 20, '900');
 
-      if (tile.price) {
-        ctx.fillStyle = '#f1c40f';
-        ctx.font = 'bold 30px Inter, sans-serif';
-        ctx.fillText(`Rp${tile.price}rb`, cw / 2, ch * 0.82);
-      } else if (tile.type === 'chance' || tile.type === 'community') {
-        ctx.fillStyle = '#3498db';
-        ctx.font = 'bold 24px Inter, sans-serif';
-        ctx.fillText(tile.type === 'chance' ? 'KESEMPATAN' : 'DANA UMUM', cw / 2, ch * 0.82);
+      // Iconic Corner Illustration
+      const artX = 36;
+      const artY = 104;
+      const artW = cw - 72;
+      const artH = 286;
+      if (typeof NusantaraLandmarks !== 'undefined') {
+        NusantaraLandmarks.drawLandmarkOnCanvas(ctx, tile, artX, artY, artW, artH, true);
       }
+
+      // Bottom Subtitle Pill (well inside inner border)
+      const pillW = cw - 88;
+      const pillH = 54;
+      const pillX = 44;
+      const pillY = ch - 86;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(pillX, pillY, pillW, pillH, 12);
+      } else {
+        ctx.rect(pillX, pillY, pillW, pillH);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#fbbf24';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawFittedText(ctx, cornerMeta.sub, cw / 2, pillY + pillH / 2 + 1, pillW - 24, 26, 16, '800');
+
+    } else {
+      // Non-Corner Special Tiles (Airport, Utility, Tax, Chance, Community)
+      const badgeConfig = {
+        'airport':   { label: 'BANDARA',     color: '#0284c7' },
+        'utility':   { label: 'UTILITAS',    color: '#ca8a04' },
+        'tax':       { label: 'PAJAK NEGARA',color: '#dc2626' },
+        'chance':    { label: 'KESEMPATAN',  color: '#d97706' },
+        'community': { label: 'DANA UMUM',   color: '#0284c7' }
+      }[tile.type] || { label: 'NUSANTARA', color: '#475569' };
+
+      // Top Category Strip
+      ctx.fillStyle = badgeConfig.color;
+      ctx.fillRect(10, 10, cw - 20, 58);
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawFittedText(ctx, badgeConfig.label, cw / 2, 39, safeMaxTextWidth, 24, 16, '800');
+
+      // Tile Title
+      ctx.fillStyle = '#f8fafc';
+      this.drawWrappedFittedTitle(ctx, tile.name.toUpperCase(), cw / 2, 86, safeMaxTextWidth, 29);
+
+      // Iconic Special Tile Illustration
+      const artX = 26;
+      const artY = 166;
+      const artW = cw - 52;
+      const artH = 242;
+      if (typeof NusantaraLandmarks !== 'undefined') {
+        NusantaraLandmarks.drawLandmarkOnCanvas(ctx, tile, artX, artY, artW, artH, true);
+      }
+
+      // Bottom Price or Action Pill
+      const bottomText = tile.price
+        ? `Rp${tile.price.toLocaleString('id-ID')}rb`
+        : (tile.type === 'chance' ? 'AMBIL KARTU' : 'DANA UMUM');
+
+      const pillW = cw - 64;
+      const pillH = 52;
+      const pillX = 32;
+      const pillY = ch - 76;
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.strokeStyle = 'rgba(251, 191, 36, 0.42)';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === 'function') {
+        ctx.roundRect(pillX, pillY, pillW, pillH, 12);
+      } else {
+        ctx.rect(pillX, pillY, pillW, pillH);
+      }
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#fbbf24';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      this.drawFittedText(
+        ctx,
+        bottomText,
+        cw / 2,
+        pillY + pillH / 2 + 1,
+        pillW - 20,
+        tile.price ? 30 : 24,
+        16,
+        '800',
+        tile.price ? '"JetBrains Mono", monospace' : '"Plus Jakarta Sans", sans-serif'
+      );
     }
 
     return canvas;
   },
 
-  /* ========================================================
-     3D Procedural Token Figurine Models
-     Becak, Pinisi, Bajaj, Komodo
-     ======================================================== */
+  getPlayerColorHex(tokenType, playerIndex = 0) {
+    const tokenColors = {
+      merah: 0xef4444,
+      biru: 0x38bdf8,
+      hijau: 0x10b981,
+      kuning: 0xfacc15,
+      becak: 0xef4444,
+      pinisi: 0x38bdf8,
+      komodo: 0x10b981,
+      bajaj: 0xfacc15
+    };
+    if (tokenColors[tokenType]) return tokenColors[tokenType];
+    const fallback = [0xef4444, 0x38bdf8, 0x10b981, 0xfacc15];
+    return fallback[playerIndex % fallback.length];
+  },
+
   buildTokenMesh(tokenType, playerIndex = 0) {
     const group = new THREE.Group();
-    const colors = [0xe74c3c, 0x3498db, 0x2ecc71, 0xf1c40f]; // Player 1..4 colors
-    const pColor = colors[playerIndex % colors.length];
+    const pColor = this.getPlayerColorHex(tokenType, playerIndex);
 
-    // Colored glowing circular pedestal
-    const pedestalGeo = new THREE.CylinderGeometry(0.55, 0.6, 0.08, 32);
+    // Dark obsidian pedestal for sharp contrast against every tile color
+    const pedestalGeo = new THREE.CylinderGeometry(0.46, 0.52, 0.1, 28);
     const pedestalMat = new THREE.MeshStandardMaterial({
-      color: 0x222222,
-      roughness: 0.3,
-      metalness: 0.8
+      color: 0x0f172a,
+      roughness: 0.28,
+      metalness: 0.72
     });
     const pedestal = new THREE.Mesh(pedestalGeo, pedestalMat);
-    pedestal.position.y = 0.04;
+    pedestal.position.y = 0.05;
     pedestal.castShadow = true;
     pedestal.receiveShadow = true;
     group.add(pedestal);
 
-    // Glowing colored player ring
-    const ringGeo = new THREE.TorusGeometry(0.58, 0.04, 16, 32);
+    // Crisp colored base ring matching the pawn color
+    const ringGeo = new THREE.TorusGeometry(0.49, 0.042, 12, 28);
     const ringMat = new THREE.MeshBasicMaterial({ color: pColor });
     const ring = new THREE.Mesh(ringGeo, ringMat);
     ring.rotation.x = Math.PI / 2;
-    ring.position.y = 0.07;
+    ring.position.y = 0.08;
     group.add(ring);
 
-    // Realistic Token Model
-    let model = null;
-    switch (tokenType) {
-      case 'becak':
-        model = this.buildBecakModel(pColor);
-        break;
-      case 'pinisi':
-        model = this.buildPinisiModel(pColor);
-        break;
-      case 'bajaj':
-        model = this.buildBajajModel(pColor);
-        break;
-      case 'komodo':
-      default:
-        model = this.buildKomodoModel(pColor);
-        break;
-    }
+    const pawn = this.buildPawnModel(pColor);
+    pawn.position.y = 0.09;
+    group.add(pawn);
 
-    if (model) {
-      model.position.y = 0.08;
-      group.add(model);
-    }
-
-    group.scale.set(0.85, 0.85, 0.85);
+    group.scale.set(0.84, 0.84, 0.84);
     return group;
   },
 
-  buildBecakModel(accentColor) {
+  buildPawnModel(pawnColor) {
     const g = new THREE.Group();
-    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xdddddd, roughness: 0.15, metalness: 0.9 });
-    const bodyMat = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.4, metalness: 0.3 });
-    const seatMat = new THREE.MeshStandardMaterial({ color: 0x331100, roughness: 0.8, metalness: 0.1 });
-    const rubberMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.9, metalness: 0.1 });
 
-    // Passenger Carriage Cabin
-    const cabinGeo = new THREE.BoxGeometry(0.65, 0.35, 0.55);
-    const cabin = new THREE.Mesh(cabinGeo, bodyMat);
-    cabin.position.set(0, 0.3, 0.15);
-    cabin.castShadow = true;
-    g.add(cabin);
-
-    // Curved Canopy
-    const canopyGeo = new THREE.CylinderGeometry(0.32, 0.32, 0.65, 16, 1, false, 0, Math.PI);
-    const canopyMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.6, metalness: 0.1 });
-    const canopy = new THREE.Mesh(canopyGeo, canopyMat);
-    canopy.rotation.z = Math.PI / 2;
-    canopy.position.set(0, 0.5, 0.12);
-    canopy.castShadow = true;
-    g.add(canopy);
-
-    // Seat cushion
-    const seatGeo = new THREE.BoxGeometry(0.55, 0.1, 0.35);
-    const seat = new THREE.Mesh(seatGeo, seatMat);
-    seat.position.set(0, 0.32, 0.15);
-    g.add(seat);
-
-    // 2 Front Wheels
-    const wheelGeo = new THREE.TorusGeometry(0.2, 0.025, 8, 24);
-    const w1 = new THREE.Mesh(wheelGeo, rubberMat);
-    w1.position.set(-0.38, 0.2, 0.25);
-    w1.rotation.y = Math.PI / 2;
-    w1.castShadow = true;
-    g.add(w1);
-
-    const w2 = w1.clone();
-    w2.position.set(0.38, 0.2, 0.25);
-    g.add(w2);
-
-    // Rear frame & driver bicycle
-    const frameGeo = new THREE.CylinderGeometry(0.02, 0.02, 0.6, 8);
-    const frame = new THREE.Mesh(frameGeo, chromeMat);
-    frame.rotation.x = Math.PI / 3;
-    frame.position.set(0, 0.28, -0.22);
-    g.add(frame);
-
-    // Rear single wheel
-    const w3 = new THREE.Mesh(wheelGeo, rubberMat);
-    w3.position.set(0, 0.2, -0.45);
-    w3.rotation.y = Math.PI / 2;
-    w3.castShadow = true;
-    g.add(w3);
-
-    // Saddle
-    const saddleGeo = new THREE.ConeGeometry(0.08, 0.15, 4);
-    const saddle = new THREE.Mesh(saddleGeo, seatMat);
-    saddle.rotation.x = Math.PI;
-    saddle.position.set(0, 0.45, -0.25);
-    g.add(saddle);
-
-    return g;
-  },
-
-  buildPinisiModel(accentColor) {
-    const g = new THREE.Group();
-    const woodMat = new THREE.MeshStandardMaterial({ color: 0x6e4726, roughness: 0.5, metalness: 0.1 });
-    const sailMat = new THREE.MeshStandardMaterial({ color: 0xf5f0e1, roughness: 0.7, metalness: 0.05, side: THREE.DoubleSide });
-    const mastMat = new THREE.MeshStandardMaterial({ color: 0x3d2314, roughness: 0.4, metalness: 0.2 });
-
-    // Streamlined wooden hull
-    const hullGeo = new THREE.CylinderGeometry(0.22, 0.1, 1.1, 16);
-    const hull = new THREE.Mesh(hullGeo, woodMat);
-    hull.rotation.z = Math.PI / 2;
-    hull.scale.set(0.65, 1, 1);
-    hull.position.set(0, 0.18, 0);
-    hull.castShadow = true;
-    g.add(hull);
-
-    // Pointed bow
-    const bowGeo = new THREE.ConeGeometry(0.18, 0.45, 16);
-    const bow = new THREE.Mesh(bowGeo, woodMat);
-    bow.rotation.x = -Math.PI / 2;
-    bow.position.set(0, 0.18, 0.65);
-    g.add(bow);
-
-    // Main Mast (Tiang Agung)
-    const mastGeo = new THREE.CylinderGeometry(0.02, 0.025, 0.95, 8);
-    const mast1 = new THREE.Mesh(mastGeo, mastMat);
-    mast1.position.set(0, 0.65, 0.1);
-    g.add(mast1);
-
-    // Fore Mast (Tiang Depan)
-    const mast2 = new THREE.Mesh(mastGeo, mastMat);
-    mast2.scale.set(0.85, 0.85, 0.85);
-    mast2.position.set(0, 0.58, 0.38);
-    g.add(mast2);
-
-    // Billowing Pinisi Sails (Trapezoidal / Triangular)
-    const sailGeo = new THREE.PlaneGeometry(0.45, 0.55);
-    const sail1 = new THREE.Mesh(sailGeo, sailMat);
-    sail1.position.set(0, 0.68, 0.05);
-    sail1.rotation.y = Math.PI / 12;
-    sail1.castShadow = true;
-    g.add(sail1);
-
-    const sail2 = new THREE.Mesh(sailGeo, sailMat);
-    sail2.scale.set(0.8, 0.8, 0.8);
-    sail2.position.set(0, 0.6, 0.34);
-    sail2.rotation.y = Math.PI / 10;
-    sail2.castShadow = true;
-    g.add(sail2);
-
-    // Bowsprit pole
-    const bowspritGeo = new THREE.CylinderGeometry(0.015, 0.015, 0.4, 8);
-    const bowsprit = new THREE.Mesh(bowspritGeo, mastMat);
-    bowsprit.rotation.x = Math.PI / 3;
-    bowsprit.position.set(0, 0.3, 0.9);
-    g.add(bowsprit);
-
-    return g;
-  },
-
-  buildBajajModel(accentColor) {
-    const g = new THREE.Group();
-    const bodyMat = new THREE.MeshStandardMaterial({ color: 0xff6600, roughness: 0.25, metalness: 0.35 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6, metalness: 0.1 });
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0x99ccff, roughness: 0.1, metalness: 0.8, transparent: true, opacity: 0.6 });
-    const rubberMat = new THREE.MeshStandardMaterial({ color: 0x151515, roughness: 0.9, metalness: 0.1 });
-    const chromeMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee, roughness: 0.1, metalness: 0.9 });
-
-    // Lower cabin body
-    const bodyGeo = new THREE.BoxGeometry(0.55, 0.32, 0.75);
-    const body = new THREE.Mesh(bodyGeo, bodyMat);
-    body.position.set(0, 0.28, 0);
-    body.castShadow = true;
-    g.add(body);
-
-    // Rounded Front Nose
-    const noseGeo = new THREE.CylinderGeometry(0.24, 0.27, 0.3, 16);
-    const nose = new THREE.Mesh(noseGeo, bodyMat);
-    nose.position.set(0, 0.28, 0.36);
-    g.add(nose);
-
-    // Upper cabin / roof
-    const roofGeo = new THREE.BoxGeometry(0.52, 0.22, 0.65);
-    const roof = new THREE.Mesh(roofGeo, roofMat);
-    roof.position.set(0, 0.5, -0.05);
-    roof.castShadow = true;
-    g.add(roof);
-
-    // Windshield
-    const windshieldGeo = new THREE.PlaneGeometry(0.42, 0.18);
-    const windshield = new THREE.Mesh(windshieldGeo, glassMat);
-    windshield.position.set(0, 0.46, 0.28);
-    windshield.rotation.x = -Math.PI / 10;
-    g.add(windshield);
-
-    // Chrome Headlight
-    const lightGeo = new THREE.SphereGeometry(0.06, 16, 16);
-    const light = new THREE.Mesh(lightGeo, chromeMat);
-    light.position.set(0, 0.32, 0.5);
-    g.add(light);
-
-    // 3 Wheels
-    const wheelGeo = new THREE.CylinderGeometry(0.12, 0.12, 0.08, 16);
-    const wFront = new THREE.Mesh(wheelGeo, rubberMat);
-    wFront.rotation.z = Math.PI / 2;
-    wFront.position.set(0, 0.12, 0.35);
-    wFront.castShadow = true;
-    g.add(wFront);
-
-    const wRearL = new THREE.Mesh(wheelGeo, rubberMat);
-    wRearL.rotation.z = Math.PI / 2;
-    wRearL.position.set(-0.28, 0.12, -0.22);
-    wRearL.castShadow = true;
-    g.add(wRearL);
-
-    const wRearR = wRearL.clone();
-    wRearR.position.x = 0.28;
-    g.add(wRearR);
-
-    return g;
-  },
-
-  buildKomodoModel(accentColor) {
-    const g = new THREE.Group();
-    // Antique Bronze / Emerald Komodo Figurine
-    const bronzeMat = new THREE.MeshStandardMaterial({
-      color: 0x3d6e50,
-      roughness: 0.35,
-      metalness: 0.7
+    const pawnMat = new THREE.MeshStandardMaterial({
+      color: pawnColor,
+      roughness: 0.18,
+      metalness: 0.16
+    });
+    const collarAccentMat = new THREE.MeshStandardMaterial({
+      color: 0xfef3c7,
+      roughness: 0.25,
+      metalness: 0.75
     });
 
-    // Body / Torso
-    const bodyGeo = new THREE.CylinderGeometry(0.18, 0.2, 0.75, 12);
-    const body = new THREE.Mesh(bodyGeo, bronzeMat);
-    body.rotation.x = Math.PI / 2;
-    body.scale.set(1, 1, 0.6);
-    body.position.set(0, 0.22, 0);
+    // Classic sculpted board-game pawn silhouette via LatheGeometry
+    const profile = [
+      new THREE.Vector2(0.0, 0.0),
+      new THREE.Vector2(0.39, 0.0),
+      new THREE.Vector2(0.39, 0.09),
+      new THREE.Vector2(0.32, 0.16),
+      new THREE.Vector2(0.24, 0.25),
+      new THREE.Vector2(0.16, 0.48),
+      new THREE.Vector2(0.14, 0.67),
+      new THREE.Vector2(0.26, 0.72),
+      new THREE.Vector2(0.26, 0.76),
+      new THREE.Vector2(0.14, 0.80),
+      new THREE.Vector2(0.0, 0.84)
+    ];
+
+    const bodyGeo = new THREE.LatheGeometry(profile, 32);
+    const body = new THREE.Mesh(bodyGeo, pawnMat);
     body.castShadow = true;
+    body.receiveShadow = true;
     g.add(body);
 
-    // Neck & Head
-    const headGeo = new THREE.ConeGeometry(0.13, 0.38, 8);
-    const head = new THREE.Mesh(headGeo, bronzeMat);
-    head.rotation.x = -Math.PI / 2.3;
-    head.position.set(0, 0.28, 0.48);
+    // Subtle metallic collar trim for definition even on bright pawns
+    const collarRing = new THREE.Mesh(new THREE.TorusGeometry(0.255, 0.022, 10, 28), collarAccentMat);
+    collarRing.rotation.x = Math.PI / 2;
+    collarRing.position.y = 0.74;
+    g.add(collarRing);
+
+    // Classic spherical pawn head
+    const headGeo = new THREE.SphereGeometry(0.255, 28, 22);
+    const head = new THREE.Mesh(headGeo, pawnMat);
+    head.position.y = 1.01;
     head.castShadow = true;
+    head.receiveShadow = true;
     g.add(head);
-
-    // Long Sinuous Tail
-    const tailGeo = new THREE.CylinderGeometry(0.04, 0.14, 0.75, 8);
-    const tail = new THREE.Mesh(tailGeo, bronzeMat);
-    tail.rotation.x = Math.PI / 2.2;
-    tail.rotation.y = Math.PI / 8;
-    tail.position.set(-0.06, 0.18, -0.65);
-    tail.castShadow = true;
-    g.add(tail);
-
-    // 4 Splayed Legs
-    const legGeo = new THREE.BoxGeometry(0.08, 0.18, 0.08);
-    const l1 = new THREE.Mesh(legGeo, bronzeMat);
-    l1.position.set(-0.24, 0.14, 0.22);
-    l1.rotation.z = Math.PI / 6;
-    l1.castShadow = true;
-    g.add(l1);
-
-    const l2 = l1.clone();
-    l2.position.set(0.24, 0.14, 0.22);
-    l2.rotation.z = -Math.PI / 6;
-    g.add(l2);
-
-    const l3 = l1.clone();
-    l3.position.set(-0.24, 0.14, -0.2);
-    g.add(l3);
-
-    const l4 = l2.clone();
-    l4.position.set(0.24, 0.14, -0.2);
-    g.add(l4);
 
     return g;
   },
 
-  /* ========================================================
-     3D Buildings: Houses & Hotels
-     ======================================================== */
   createHouseMesh() {
     const g = new THREE.Group();
-    // Emerald Green House
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0x27ae60, roughness: 0.3, metalness: 0.2 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0xd35400, roughness: 0.4, metalness: 0.1 });
-    const detailMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2, metalness: 0.1 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0x10b981, roughness: 0.3, metalness: 0.2 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.4, metalness: 0.1 });
 
-    // House walls
-    const wallGeo = new THREE.BoxGeometry(0.28, 0.22, 0.28);
-    const walls = new THREE.Mesh(wallGeo, wallMat);
+    const walls = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.22, 0.28), wallMat);
     walls.position.y = 0.11;
     walls.castShadow = true;
     g.add(walls);
 
-    // Pitched Roof
-    const roofGeo = new THREE.ConeGeometry(0.24, 0.18, 4);
-    const roof = new THREE.Mesh(roofGeo, roofMat);
+    const roof = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.18, 4), roofMat);
     roof.position.y = 0.3;
     roof.rotation.y = Math.PI / 4;
-    roof.castShadow = true;
     g.add(roof);
-
-    // White Chimney
-    const chimneyGeo = new THREE.BoxGeometry(0.06, 0.12, 0.06);
-    const chimney = new THREE.Mesh(chimneyGeo, detailMat);
-    chimney.position.set(0.08, 0.32, 0.05);
-    g.add(chimney);
 
     return g;
   },
 
   createHotelMesh() {
     const g = new THREE.Group();
-    // Ruby Red Luxury Hotel Tower
-    const wallMat = new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.25, metalness: 0.3 });
-    const roofMat = new THREE.MeshStandardMaterial({ color: 0xf1c40f, roughness: 0.2, metalness: 0.8 });
-    const glassMat = new THREE.MeshStandardMaterial({ color: 0xecf0f1, roughness: 0.1, metalness: 0.5 });
+    const wallMat = new THREE.MeshStandardMaterial({ color: 0xe11d48, roughness: 0.25, metalness: 0.3 });
+    const roofMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24, roughness: 0.2, metalness: 0.8 });
 
-    // Hotel main tower
-    const towerGeo = new THREE.BoxGeometry(0.48, 0.52, 0.36);
-    const tower = new THREE.Mesh(towerGeo, wallMat);
+    const tower = new THREE.Mesh(new THREE.BoxGeometry(0.48, 0.52, 0.36), wallMat);
     tower.position.y = 0.26;
     tower.castShadow = true;
     g.add(tower);
 
-    // Penthouse Roof
-    const roofGeo = new THREE.BoxGeometry(0.42, 0.1, 0.3);
-    const roof = new THREE.Mesh(roofGeo, roofMat);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.1, 0.3), roofMat);
     roof.position.y = 0.56;
-    roof.castShadow = true;
     g.add(roof);
 
-    // Golden Spire
-    const spireGeo = new THREE.CylinderGeometry(0.015, 0.03, 0.22, 8);
-    const spire = new THREE.Mesh(spireGeo, roofMat);
+    const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.03, 0.22, 8), roofMat);
     spire.position.y = 0.7;
     g.add(spire);
 
     return g;
   },
 
-  updateBuildings(boardState) {
+  updateBuildings(boardState, players = []) {
     if (!boardState) return;
 
-    // Remove existing building meshes
     while (this.buildingsGroup.children.length > 0) {
       this.buildingsGroup.remove(this.buildingsGroup.children[0]);
     }
     this.buildingMeshes.clear();
 
     for (const [id, state] of Object.entries(boardState)) {
-      const tileIndex = parseInt(id);
+      const tileIndex = parseInt(id, 10);
       const coord = this.tileCoords[tileIndex];
       if (!coord) continue;
+
+      // Update 3D tile owner strip color
+      const tileMesh = this.tileMeshes[tileIndex];
+      if (tileMesh && tileMesh.ownerStrip) {
+        if (state.ownerId && !state.mortgaged) {
+          const ownerIdx = players.findIndex(p => p.id === state.ownerId);
+          const ownerPlayer = players[ownerIdx];
+          const colorHex = ownerPlayer ? this.getPlayerColorHex(ownerPlayer.token, ownerIdx) : 0xfbbf24;
+          tileMesh.ownerStrip.material.color.setHex(colorHex);
+          tileMesh.ownerStrip.material.visible = true;
+        } else if (state.mortgaged) {
+          tileMesh.ownerStrip.material.color.setHex(0x64748b);
+          tileMesh.ownerStrip.material.visible = true;
+        } else {
+          tileMesh.ownerStrip.material.visible = false;
+        }
+      }
+
+      if (!state.hotel && (!state.houses || state.houses <= 0)) continue;
 
       const group = new THREE.Group();
       group.position.set(coord.x, this.boardThickness / 2 + 0.06, coord.z);
@@ -970,17 +908,16 @@ const Board3D = {
 
       if (state.hotel) {
         const hotel = this.createHotelMesh();
-        hotel.position.set(0, 0, coord.isCorner ? 0 : -coord.depth * 0.25);
+        hotel.position.set(0, 0, coord.isCorner ? 0 : -coord.depth * 0.33);
         group.add(hotel);
       } else if (state.houses > 0) {
-        // Place up to 4 houses along the top color band of the tile
         const houseCount = state.houses;
-        const spacing = (coord.width * 0.8) / 4;
+        const spacing = (coord.width * 0.78) / 4;
         const startX = -((houseCount - 1) * spacing) / 2;
 
         for (let h = 0; h < houseCount; h++) {
           const house = this.createHouseMesh();
-          house.position.set(startX + h * spacing, 0, coord.isCorner ? 0 : -coord.depth * 0.28);
+          house.position.set(startX + h * spacing, 0, coord.isCorner ? 0 : -coord.depth * 0.35);
           group.add(house);
         }
       }
@@ -990,9 +927,6 @@ const Board3D = {
     }
   },
 
-  /* ========================================================
-     3D Dice System with Physics-Style Roll Animation
-     ======================================================== */
   initDice() {
     this.diceMeshes = [];
     while (this.diceGroup.children.length > 0) {
@@ -1002,8 +936,8 @@ const Board3D = {
     const d1 = this.createSingleDie();
     const d2 = this.createSingleDie();
 
-    d1.position.set(-1.2, this.boardThickness / 2 + 0.35, 0);
-    d2.position.set(1.2, this.boardThickness / 2 + 0.35, 0);
+    d1.position.set(-1.1, this.boardThickness / 2 + 0.38, 0);
+    d2.position.set(1.1, this.boardThickness / 2 + 0.38, 0);
 
     this.diceGroup.add(d1);
     this.diceGroup.add(d2);
@@ -1011,27 +945,27 @@ const Board3D = {
   },
 
   createSingleDie() {
-    const size = 0.7;
+    const size = 0.74;
     const geo = new THREE.BoxGeometry(size, size, size);
 
-    // 6 textures for 6 faces
     const materials = [];
     for (let face = 1; face <= 6; face++) {
       const canvas = document.createElement('canvas');
-      canvas.width = 128;
-      canvas.height = 128;
+      canvas.width = 256;
+      canvas.height = 256;
       const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.scale(2, 2);
 
-      // Rounded ivory background
       ctx.fillStyle = '#faf8f5';
       ctx.fillRect(0, 0, 128, 128);
 
-      ctx.strokeStyle = '#d0cbc4';
+      ctx.strokeStyle = '#cbd5e1';
       ctx.lineWidth = 6;
       ctx.strokeRect(3, 3, 122, 122);
 
-      // Draw pips (dots)
-      ctx.fillStyle = face === 1 ? '#e74c3c' : '#1a1a1a'; // 1 pip is red (classic Indonesian/Asian dice)
+      ctx.fillStyle = face === 1 ? '#e11d48' : '#0f172a';
       const r = 12;
 
       const drawDot = (x, y) => {
@@ -1051,12 +985,10 @@ const Board3D = {
         drawDot(36, 98); drawDot(92, 98);
       }
 
-      const tex = new THREE.CanvasTexture(canvas);
-      materials.push(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.25, metalness: 0.1 }));
+      const tex = this.createCrispTexture(canvas);
+      materials.push(new THREE.MeshStandardMaterial({ map: tex, roughness: 0.3, metalness: 0.08 }));
     }
 
-    // Mapping Three.js BoxGeometry face index to dice value:
-    // 0: +X, 1: -X, 2: +Y (Top), 3: -Y (Bottom), 4: +Z, 5: -Z
     const mesh = new THREE.Mesh(geo, materials);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -1064,24 +996,25 @@ const Board3D = {
   },
 
   rollDice3D(d1Val, d2Val, callback) {
-    if (this.diceMeshes.length < 2) return;
+    if (this.diceMeshes.length < 2) {
+      if (callback) callback();
+      return;
+    }
     const [die1, die2] = this.diceMeshes;
 
-    const startY = 3.5;
-    const endY = this.boardThickness / 2 + 0.35;
-    const duration = 1200; // ms
+    const startY = 3.6;
+    const endY = this.boardThickness / 2 + 0.38;
+    const duration = 900;
     const startTime = performance.now();
 
-    // Map face value to rotation where that face is pointing +Y (UP)
     const getFaceRotation = (val) => {
-      // BoxGeometry faces: 0=+X, 1=-X, 2=+Y, 3=-Y, 4=+Z, 5=-Z
       switch (val) {
-        case 1: return { x: 0, z: Math.PI / 2 };        // face 0 (+X) pointing up
-        case 2: return { x: 0, z: -Math.PI / 2 };       // face 1 (-X) pointing up
-        case 3: return { x: 0, z: 0 };                  // face 2 (+Y) pointing up
-        case 4: return { x: Math.PI, z: 0 };            // face 3 (-Y) pointing up
-        case 5: return { x: -Math.PI / 2, z: 0 };       // face 4 (+Z) pointing up
-        case 6: return { x: Math.PI / 2, z: 0 };        // face 5 (-Z) pointing up
+        case 1: return { x: 0, z: Math.PI / 2 };
+        case 2: return { x: 0, z: -Math.PI / 2 };
+        case 3: return { x: 0, z: 0 };
+        case 4: return { x: Math.PI, z: 0 };
+        case 5: return { x: -Math.PI / 2, z: 0 };
+        case 6: return { x: Math.PI / 2, z: 0 };
         default: return { x: 0, z: 0 };
       }
     };
@@ -1089,29 +1022,20 @@ const Board3D = {
     const targetRot1 = getFaceRotation(d1Val);
     const targetRot2 = getFaceRotation(d2Val);
 
-    // Random initial tumble spin velocities
-    const spins1 = { x: (Math.random() > 0.5 ? 1 : -1) * (4 + Math.random() * 4) * Math.PI, y: Math.PI * 4, z: Math.PI * 4 };
-    const spins2 = { x: (Math.random() > 0.5 ? 1 : -1) * (4 + Math.random() * 4) * Math.PI, y: -Math.PI * 4, z: -Math.PI * 4 };
-
-    // Dynamic light pulse in dice area
-    if (this.spotLight) {
-      this.spotLight.intensity = 1.8;
-      setTimeout(() => { if (this.spotLight) this.spotLight.intensity = 0.8; }, 1500);
-    }
+    const spins1 = { x: 4 * Math.PI, y: 2 * Math.PI, z: 2 * Math.PI };
+    const spins2 = { x: -4 * Math.PI, y: -2 * Math.PI, z: 2 * Math.PI };
 
     const animateRoll = (now) => {
       const elapsed = now - startTime;
       const progress = Math.min(elapsed / duration, 1);
       const easeOut = 1 - Math.pow(1 - progress, 3);
 
-      // Parabolic drop with bounces
-      const bounceHeight = Math.sin(progress * Math.PI * 3.5) * (1 - progress) * 1.5;
+      const bounceHeight = Math.sin(progress * Math.PI * 3) * (1 - progress) * 1.3;
       const currentY = THREE.MathUtils.lerp(startY, endY, easeOut) + Math.max(0, bounceHeight);
 
       die1.position.y = currentY;
       die2.position.y = currentY;
 
-      // Rotating
       if (progress < 1) {
         const remaining = 1 - progress;
         die1.rotation.x = targetRot1.x + spins1.x * remaining;
@@ -1124,17 +1048,14 @@ const Board3D = {
 
         requestAnimationFrame(animateRoll);
       } else {
-        // Settle exact rotations
         die1.position.y = endY;
         die2.position.y = endY;
         die1.rotation.set(targetRot1.x, 0, targetRot1.z);
         die2.rotation.set(targetRot2.x, 0, targetRot2.z);
 
         if (d1Val === d2Val) {
-          // Double effect: burst of sparkles
           this.spawnDoubleBurst();
         }
-
         if (callback) callback();
       }
     };
@@ -1143,18 +1064,18 @@ const Board3D = {
   },
 
   spawnDoubleBurst() {
-    const burstGeo = new THREE.RingGeometry(0.2, 1.8, 32);
-    const burstMat = new THREE.MeshBasicMaterial({ color: 0xffd700, side: THREE.DoubleSide, transparent: true, opacity: 0.9 });
+    const burstGeo = new THREE.RingGeometry(0.2, 1.6, 32);
+    const burstMat = new THREE.MeshBasicMaterial({ color: 0xfbbf24, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
     const burst = new THREE.Mesh(burstGeo, burstMat);
     burst.rotation.x = -Math.PI / 2;
-    burst.position.set(0, this.boardThickness / 2 + 0.38, 0);
+    burst.position.set(0, this.boardThickness / 2 + 0.39, 0);
     this.effectsGroup.add(burst);
 
     let scale = 1;
     const fadeBurst = () => {
       scale += 0.08;
       burst.scale.set(scale, scale, scale);
-      burstMat.opacity -= 0.04;
+      burstMat.opacity -= 0.05;
       if (burstMat.opacity > 0) {
         requestAnimationFrame(fadeBurst);
       } else {
@@ -1164,9 +1085,6 @@ const Board3D = {
     fadeBurst();
   },
 
-  /* ========================================================
-     Player Tokens: Hop Movement & Dynamic Updates
-     ======================================================== */
   updatePlayers(players) {
     if (!players) return;
 
@@ -1187,10 +1105,8 @@ const Board3D = {
         this.playerTokens.set(p.id, pData);
       }
 
-      // Position on tile
       const coord = this.tileCoords[p.position];
       if (coord) {
-        // Offset slightly if multiple players share the tile
         const offset = this.getPlayerTileOffset(p.id, p.position, players);
         pData.mesh.position.set(coord.x + offset.x, this.boardThickness / 2 + 0.05, coord.z + offset.z);
         pData.currentPosIndex = p.position;
@@ -1204,10 +1120,10 @@ const Board3D = {
     if (playersOnTile.length <= 1 || myIndex === -1) return { x: 0, z: 0 };
 
     const offsets = [
-      { x: -0.35, z: -0.35 },
-      { x: 0.35, z: -0.35 },
-      { x: -0.35, z: 0.35 },
-      { x: 0.35, z: 0.35 }
+      { x: -0.4, z: -0.4 },
+      { x: 0.4, z: -0.4 },
+      { x: -0.4, z: 0.4 },
+      { x: 0.4, z: 0.4 }
     ];
     return offsets[myIndex % offsets.length];
   },
@@ -1221,12 +1137,13 @@ const Board3D = {
         return;
       }
 
-      // Calculate path sequence
       const steps = [];
       let pos = fromPos;
-      while (pos !== toPos) {
+      let guard = 0;
+      while (pos !== toPos && guard < 42) {
         pos = (pos + 1) % 40;
         steps.push(pos);
+        guard++;
       }
 
       if (steps.length === 0) {
@@ -1235,10 +1152,11 @@ const Board3D = {
       }
 
       let stepIdx = 0;
-      const hopDuration = 180; // ms per tile hop
+      const hopDuration = 140;
 
       const hopNextTile = () => {
         if (stepIdx >= steps.length) {
+          this.updatePlayers(players);
           resolve();
           return;
         }
@@ -1249,19 +1167,16 @@ const Board3D = {
         const nextPos = new THREE.Vector3(nextCoord.x, this.boardThickness / 2 + 0.05, nextCoord.z);
         const startTime = performance.now();
 
-        // Rotate token towards travel direction
         const dir = nextPos.clone().sub(prevPos);
         if (dir.lengthSq() > 0.001) {
-          const angle = Math.atan2(dir.x, dir.z);
-          pData.mesh.rotation.y = angle;
+          pData.mesh.rotation.y = Math.atan2(dir.x, dir.z);
         }
 
         const animateHop = (now) => {
           const elapsed = now - startTime;
           const t = Math.min(elapsed / hopDuration, 1);
 
-          // Parabolic jump arc
-          const hopHeight = Math.sin(t * Math.PI) * 1.1;
+          const hopHeight = Math.sin(t * Math.PI) * 0.95;
           pData.mesh.position.x = THREE.MathUtils.lerp(prevPos.x, nextPos.x, t);
           pData.mesh.position.z = THREE.MathUtils.lerp(prevPos.z, nextPos.z, t);
           pData.mesh.position.y = THREE.MathUtils.lerp(prevPos.y, nextPos.y, t) + hopHeight;
@@ -1273,7 +1188,7 @@ const Board3D = {
             pData.currentPosIndex = targetTile;
             if (onStepCallback) onStepCallback(targetTile);
             stepIdx++;
-            setTimeout(hopNextTile, 40);
+            setTimeout(hopNextTile, 25);
           }
         };
 
@@ -1284,32 +1199,32 @@ const Board3D = {
     });
   },
 
-  /* ========================================================
-     Camera View Presets & Controls
-     ======================================================== */
   setCameraView(mode) {
-    if (!this.controls) return;
+    if (!this.controls || !this.camera) return;
+    this.currentViewMode = mode;
     this.cameraAnimating = true;
+    const aspect = this.camera.aspect || 1;
+    const portraitScale = aspect < 1 ? Math.min(1.95, 0.95 / Math.max(0.45, aspect)) : 1;
 
     switch (mode) {
-      case '3d': // Default angled luxury 3D view
-        this.cameraPosTarget.set(0, 18, 22);
+      case '3d':
+        this.cameraPosTarget.set(0, 22.5 * portraitScale, 24.5 * portraitScale);
+        this.cameraTarget.set(0, 0, aspect < 1 ? 0.5 : 1.1);
+        break;
+      case 'top':
+        this.cameraPosTarget.set(0, 29.5 * portraitScale, 0.1);
         this.cameraTarget.set(0, 0, 0);
         break;
-      case 'top': // Overhead top-down 2D/3D board view
-        this.cameraPosTarget.set(0, 27, 0.1);
+      case 'corner':
+        this.cameraPosTarget.set(16.8 * portraitScale, 15.0 * portraitScale, 16.8 * portraitScale);
         this.cameraTarget.set(0, 0, 0);
         break;
-      case 'corner': // Dramatic corner view
-        this.cameraPosTarget.set(16, 14, 16);
-        this.cameraTarget.set(0, 0, 0);
-        break;
-      case 'focus': // Focus on current player token
+      case 'focus':
         if (window.gameState) {
           const curr = window.gameState.players.find(p => p.id === window.gameState.currentPlayerId);
           if (curr && this.tileCoords[curr.position]) {
             const c = this.tileCoords[curr.position];
-            this.cameraPosTarget.set(c.x * 1.2, 10, c.z * 1.2 + 8);
+            this.cameraPosTarget.set(c.x * 1.25, 9.5 * portraitScale, c.z * 1.25 + 6.5);
             this.cameraTarget.set(c.x, 0, c.z);
           }
         }
@@ -1320,24 +1235,42 @@ const Board3D = {
   toggleLighting() {
     this.isNightMode = !this.isNightMode;
     if (this.isNightMode) {
-      this.scene.background.set(0x0c0f1d);
+      this.scene.background.set(0x0b101e);
+      if (this.scene.fog) this.scene.fog.color.set(0x0b101e);
       this.ambientLight.color.set(0xffeedd);
-      this.ambientLight.intensity = 0.6;
-      this.dirLight.intensity = 1.3;
+      this.ambientLight.intensity = 0.72;
+      this.dirLight.intensity = 1.25;
     } else {
-      // Warm bright day
-      this.scene.background.set(0x1a2536);
+      this.scene.background.set(0x16243b);
+      if (this.scene.fog) this.scene.fog.color.set(0x16243b);
       this.ambientLight.color.set(0xffffff);
-      this.ambientLight.intensity = 0.85;
-      this.dirLight.intensity = 1.6;
+      this.ambientLight.intensity = 0.95;
+      this.dirLight.intensity = 1.5;
     }
   },
 
-  /* ========================================================
-     Interactive Mouse Raycasting & Tile Selection
-     ======================================================== */
+  handleResize() {
+    if (!this.container || !this.renderer || !this.camera) return;
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    if (w <= 0 || h <= 0) return;
+    const aspect = w / h;
+    const rawDpr = window.devicePixelRatio || 1;
+    const targetDpr = this.isSoftwareGl ? Math.max(rawDpr, 1.5) : Math.min(Math.max(rawDpr, 1.5), 2.5);
+    this.renderer.setPixelRatio(targetDpr);
+    this.camera.aspect = aspect;
+    this.camera.fov = aspect < 0.85 ? 54 : 44;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+    this.setCameraView(this.currentViewMode || '3d');
+  },
+
   setupEvents() {
     const dom = this.renderer.domElement;
+
+    dom.addEventListener('pointerdown', (e) => {
+      this.pointerDownPos = { x: e.clientX, y: e.clientY };
+    });
 
     dom.addEventListener('pointermove', (e) => {
       const rect = dom.getBoundingClientRect();
@@ -1346,21 +1279,22 @@ const Board3D = {
       this.handleHover();
     });
 
-    dom.addEventListener('click', (e) => {
+    dom.addEventListener('pointerup', (e) => {
+      const dx = e.clientX - this.pointerDownPos.x;
+      const dy = e.clientY - this.pointerDownPos.y;
+      if (Math.hypot(dx, dy) > 8) return; // Ignore orbit drags
       const rect = dom.getBoundingClientRect();
       this.mouse.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       this.mouse.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
       this.handleClick();
     });
 
-    window.addEventListener('resize', () => {
-      if (!this.container || !this.renderer || !this.camera) return;
-      const w = this.container.clientWidth;
-      const h = this.container.clientHeight;
-      this.camera.aspect = w / h;
-      this.camera.updateProjectionMatrix();
-      this.renderer.setSize(w, h);
-    });
+    window.addEventListener('resize', () => this.handleResize());
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => this.handleResize());
+      ro.observe(this.container);
+    }
   },
 
   handleHover() {
@@ -1391,7 +1325,7 @@ const Board3D = {
         }
         this.hoveredTile = null;
       }
-      this.container.style.cursor = 'default';
+      this.container.style.cursor = 'grab';
     }
   },
 
@@ -1422,24 +1356,20 @@ const Board3D = {
       this.tileMeshes[index].highlightFrame.material.visible = true;
     }
 
-    // Call existing 2D game showTileInfo to populate right panel!
     if (typeof showTileInfo === 'function') {
-      showTileInfo(index);
+      showTileInfo(index, true);
     }
   },
 
-  /* ========================================================
-     Animation Loop
-     ======================================================== */
   animate() {
     requestAnimationFrame(this.animate);
+    if (!this.enabled) return;
 
-    // Smooth camera transition if active
     if (this.cameraAnimating && this.controls) {
-      this.camera.position.lerp(this.cameraPosTarget, 0.08);
-      this.controls.target.lerp(this.cameraTarget, 0.08);
+      this.camera.position.lerp(this.cameraPosTarget, 0.1);
+      this.controls.target.lerp(this.cameraTarget, 0.1);
 
-      if (this.camera.position.distanceTo(this.cameraPosTarget) < 0.1) {
+      if (this.camera.position.distanceTo(this.cameraPosTarget) < 0.12) {
         this.cameraAnimating = false;
       }
     }
@@ -1448,16 +1378,13 @@ const Board3D = {
       this.controls.update();
     }
 
-    // Gentle idle animation for player tokens (subtle hovering)
     const time = performance.now() * 0.003;
     for (const [, pData] of this.playerTokens) {
       if (pData && pData.mesh) {
-        // Keep base on board, rock slightly
-        pData.mesh.rotation.z = Math.sin(time + pData.currentPosIndex) * 0.03;
+        pData.mesh.rotation.z = Math.sin(time + pData.currentPosIndex) * 0.025;
       }
     }
 
     this.renderer.render(this.scene, this.camera);
   }
 };
-

@@ -1,105 +1,257 @@
 const socket = io();
 const params = new URLSearchParams(window.location.search);
-const roomCode = params.get('room');
+let roomCode = params.get('room');
 let myPlayerId = params.get('playerId');
+const isAutoStart = params.get('autostart') === '1';
+
 window.myPlayerId = myPlayerId;
 window.gameState = null;
 
 let turnTimerInterval = null;
+let lastTrackedTurnKey = '';
+let isAnimatingTurn = false;
+let activeMobileTab = 'board';
+let pendingBuyOption = null;
+let pendingCardDrawn = null;
+let pendingLogs = [];
+let cardModalCloseResolver = null;
 
-if (!roomCode || !myPlayerId) {
-  window.location.href = '/';
-}
+document.body.dataset.state = 'playing';
 
-// Rejoin room
-socket.emit('rejoin', { roomCode, playerId: myPlayerId }, (res) => {
-  if (res && res.newPlayerId) {
-    myPlayerId = res.newPlayerId;
-    window.myPlayerId = res.newPlayerId;
-  }
-});
-document.getElementById('room-code-display').textContent = roomCode;
-
-// Game state update
-socket.on('room-state', (state) => {
-  window.gameState = state;
-  updatePlayersPanel(state.players, state.currentPlayerId, state.hostId);
+function applyRoomStateToUI(state) {
+  if (!state) return;
+  updatePlayersPanel(state.players, state.currentPlayerId);
+  updateMobilePlayerStrip(state.players, state.currentPlayerId);
   updatePlayerPositions(state.players);
   updateBuildings(state.boardState);
   updateMyProperties(state.players, state.boardState);
   updateTurnUI(state);
+}
+
+function initRoomConnection() {
+  if (roomCode && myPlayerId) {
+    const codeDisplay = document.getElementById('room-code-display');
+    if (codeDisplay) codeDisplay.textContent = roomCode;
+
+    socket.emit('rejoin', { roomCode, playerId: myPlayerId }, (res) => {
+      if (res && res.error) {
+        if (isAutoStart) {
+          startQuickFallback();
+        } else {
+          window.location.href = '/';
+        }
+        return;
+      }
+      if (res && res.newPlayerId) {
+        myPlayerId = res.newPlayerId;
+        window.myPlayerId = res.newPlayerId;
+        const newUrl = `${window.location.pathname}?room=${roomCode}&playerId=${myPlayerId}`;
+        window.history.replaceState({}, '', newUrl);
+      }
+      if (res && Array.isArray(res.logs)) {
+        res.logs.forEach(entry => addLogMessage(entry.message, entry.timestamp));
+      }
+    });
+  } else if (isAutoStart) {
+    startQuickFallback();
+  } else {
+    window.location.href = '/';
+  }
+}
+
+function startQuickFallback() {
+  socket.emit('quick-start', { name: 'Nakhoda', token: 'merah', botCount: 3 }, (res) => {
+    if (res && res.success) {
+      roomCode = res.code;
+      myPlayerId = res.playerId;
+      window.myPlayerId = res.playerId;
+      const codeDisplay = document.getElementById('room-code-display');
+      if (codeDisplay) codeDisplay.textContent = roomCode;
+      const newUrl = `${window.location.pathname}?room=${roomCode}&playerId=${myPlayerId}`;
+      window.history.replaceState({}, '', newUrl);
+      if (Array.isArray(res.logs)) {
+        res.logs.forEach(entry => addLogMessage(entry.message, entry.timestamp));
+      }
+    } else {
+      window.location.href = '/';
+    }
+  });
+}
+
+initRoomConnection();
+
+socket.on('room-state', (state) => {
+  const isFirstState = !window.gameState;
+  window.gameState = state;
+
+  // Do not snap player tokens or overwrite turn controls while dice/token movement is animating!
+  if (isAnimatingTurn && !isFirstState) {
+    return;
+  }
+
+  applyRoomStateToUI(state);
+
+  if (state.lastDice && !isAnimatingTurn) {
+    showDiceReadout(state.lastDice.d1, state.lastDice.d2, false);
+  }
 });
 
-function updatePlayersPanel(players, currentPlayerId, hostId) {
+function updatePlayersPanel(players, currentPlayerId) {
   const panel = document.getElementById('players-panel');
+  if (!panel) return;
   panel.innerHTML = '';
-  
-  players.forEach(p => {
+
+  players.forEach((p, idx) => {
     const div = document.createElement('div');
-    div.className = 'player-info-card' + (p.id === currentPlayerId ? ' active-turn' : '') + (p.bankrupt ? ' bankrupt' : '');
+    div.className = 'player-info-card' +
+      (p.id === currentPlayerId ? ' active-turn' : '') +
+      (p.bankrupt ? ' bankrupt' : '');
+
+    const colorDot = typeof getPawnColor === 'function' ? getPawnColor(p.token, idx) : '#ef4444';
+    const pawnHtml = typeof renderPawnSvg === 'function' ? renderPawnSvg(p.token, 22, idx) : '●';
+    const cityName = (typeof boardData !== 'undefined' && boardData[p.position]) ? boardData[p.position].name : `Petak ${p.position}`;
+
     div.innerHTML = `
       <div class="player-header">
-        <span class="player-token-large">${TOKEN_ICONS[p.token] || '?'}</span>
-        <div>
-          <span class="player-name-panel">${p.name}</span>
-          ${p.isBot ? '<span class="badge-small bot">BOT</span>' : ''}
-          ${p.id === myPlayerId ? '<span class="badge-small me">KAMU</span>' : ''}
+        <span class="player-token-avatar" style="border-color:${colorDot}">${pawnHtml}</span>
+        <div class="player-meta">
+          <div class="player-name-row">
+            <span class="player-name-panel">${p.name}</span>
+            ${p.id === myPlayerId ? '<span class="badge-small me">KAMU</span>' : ''}
+            ${p.isBot ? '<span class="badge-small bot">AI</span>' : ''}
+          </div>
+          <span class="player-location">📍 ${cityName}</span>
         </div>
       </div>
-      <div class="player-money">💰 Rp${p.money.toLocaleString()}rb</div>
-      <div class="player-props-count">🏠 ${p.properties.length} properti</div>
-      ${p.inJail ? '<div class="player-jail">🔒 Di Penjara</div>' : ''}
+      <div class="player-stats-row">
+        <div class="player-money mono-num">Rp${p.money.toLocaleString('id-ID')}rb</div>
+        <div class="player-props-count">${p.properties.length} Kota</div>
+      </div>
+      ${p.inJail ? '<div class="player-jail">🔒 Ditahan di Penjara</div>' : ''}
       ${p.bankrupt ? '<div class="player-bankrupt">💀 Bangkrut</div>' : ''}
     `;
-    
-    // Trade button for other players
-    if (p.id !== myPlayerId && !p.bankrupt && !p.isBot) {
+
+    if (p.id !== myPlayerId && !p.bankrupt) {
       const tradeBtn = document.createElement('button');
-      tradeBtn.className = 'btn btn-tiny';
-      tradeBtn.textContent = '🤝 Trade';
+      tradeBtn.type = 'button';
+      tradeBtn.className = 'btn btn-tiny btn-trade-card';
+      tradeBtn.textContent = '🤝 Ajukan Trade';
       tradeBtn.onclick = () => openTradeWith(p.id);
       div.appendChild(tradeBtn);
     }
-    
+
     panel.appendChild(div);
   });
 }
 
-function updateTurnUI(state) {
-  const current = state.players.find(p => p.id === state.currentPlayerId);
-  document.getElementById('current-turn-name').textContent = current ? current.name : '-';
-  
+function updateMobilePlayerStrip(players, currentPlayerId) {
+  const strip = document.getElementById('mobile-players-strip');
+  if (!strip) return;
+  strip.innerHTML = '';
+
+  players.forEach((p, idx) => {
+    const chip = document.createElement('button');
+    chip.type = 'button';
+    chip.className = 'mobile-player-chip' +
+      (p.id === currentPlayerId ? ' active-turn' : '') +
+      (p.id === myPlayerId ? ' is-me' : '') +
+      (p.bankrupt ? ' bankrupt' : '');
+    chip.onclick = () => switchMobileTab('players');
+    const pawnHtml = typeof renderPawnSvg === 'function' ? renderPawnSvg(p.token, 16, idx) : '●';
+    chip.innerHTML = `
+      <span class="chip-token">${pawnHtml}</span>
+      <span class="chip-info">
+        <span class="chip-name">${p.name}</span>
+        <span class="chip-money mono-num">Rp${p.money.toLocaleString('id-ID')}rb</span>
+      </span>
+    `;
+    strip.appendChild(chip);
+  });
+}
+
+function syncActionControls() {
+  const state = window.gameState;
+  if (!state) return;
+
   const isMyTurn = state.currentPlayerId === myPlayerId;
   const rollBtn = document.getElementById('roll-btn');
   const endTurnBtn = document.getElementById('end-turn-btn');
-  
-  rollBtn.classList.toggle('hidden', !isMyTurn);
-  rollBtn.disabled = !isMyTurn;
-  endTurnBtn.classList.add('hidden');
-  
-  // Show jail modal if my turn and in jail
-  if (isMyTurn && current && current.inJail) {
-    showJailModal(current);
+  const statusBanner = document.getElementById('turn-status-pill');
+
+  if (!rollBtn || !endTurnBtn) return;
+
+  if (isAnimatingTurn) {
+    rollBtn.classList.add('hidden');
+    endTurnBtn.classList.add('hidden');
+    return;
   }
-  
-  // Reset turn timer
-  resetTurnTimer(isMyTurn);
+
+  if (isMyTurn) {
+    if (state.turnPhase === 'roll') {
+      rollBtn.classList.remove('hidden');
+      rollBtn.disabled = false;
+      endTurnBtn.classList.add('hidden');
+      if (statusBanner) statusBanner.textContent = 'Giliranmu · Lempar Dadu!';
+    } else if (state.turnPhase === 'end') {
+      rollBtn.classList.add('hidden');
+      endTurnBtn.classList.remove('hidden');
+      endTurnBtn.disabled = false;
+      if (statusBanner) statusBanner.textContent = 'Giliranmu · Kelola Kota atau Akhiri Giliran';
+    } else if (state.turnPhase === 'buying') {
+      rollBtn.classList.add('hidden');
+      endTurnBtn.classList.add('hidden');
+      if (statusBanner) statusBanner.textContent = 'Putuskan Pembelian Properti';
+    } else if (state.turnPhase === 'auction') {
+      rollBtn.classList.add('hidden');
+      endTurnBtn.classList.add('hidden');
+      if (statusBanner) statusBanner.textContent = 'Lelang Properti Berlangsung';
+    }
+  } else {
+    rollBtn.classList.add('hidden');
+    rollBtn.disabled = true;
+    endTurnBtn.classList.add('hidden');
+    const current = state.players.find(p => p.id === state.currentPlayerId);
+    if (statusBanner) {
+      statusBanner.textContent = current ? `Menunggu ${current.name}...` : 'Menunggu giliran...';
+    }
+  }
+}
+
+function updateTurnUI(state) {
+  const current = state.players.find(p => p.id === state.currentPlayerId);
+  const turnNameEl = document.getElementById('current-turn-name');
+  if (turnNameEl) turnNameEl.textContent = current ? current.name : '-';
+
+  const isMyTurn = state.currentPlayerId === myPlayerId;
+  syncActionControls();
+
+  const turnKey = `${state.currentPlayerId}:${state.turnPhase}`;
+  if (turnKey !== lastTrackedTurnKey) {
+    lastTrackedTurnKey = turnKey;
+    if (isMyTurn && state.turnPhase === 'roll' && current && current.inJail) {
+      showJailModal(current);
+    }
+    resetTurnTimer(isMyTurn);
+  }
 }
 
 function resetTurnTimer(isMyTurn) {
   clearInterval(turnTimerInterval);
   let timeLeft = 30;
   const timerEl = document.getElementById('turn-timer');
+  if (!timerEl) return;
   timerEl.textContent = timeLeft;
   timerEl.classList.remove('timer-warning');
-  
+
   turnTimerInterval = setInterval(() => {
     timeLeft--;
-    timerEl.textContent = timeLeft;
+    timerEl.textContent = Math.max(0, timeLeft);
     if (timeLeft <= 10) timerEl.classList.add('timer-warning');
     if (timeLeft <= 0) {
       clearInterval(turnTimerInterval);
       if (isMyTurn) {
+        document.getElementById('buy-modal')?.classList.add('hidden');
+        document.getElementById('jail-modal')?.classList.add('hidden');
         socket.emit('end-turn');
       }
     }
@@ -108,12 +260,19 @@ function resetTurnTimer(isMyTurn) {
 
 function rollDice() {
   const rollBtn = document.getElementById('roll-btn');
-  rollBtn.disabled = true;
+  if (rollBtn) rollBtn.disabled = true;
+  document.getElementById('jail-modal')?.classList.add('hidden');
+  pendingBuyOption = null;
+  pendingCardDrawn = null;
+  isAnimatingTurn = true;
+  syncActionControls();
   SFX.play('dice');
   socket.emit('roll-dice');
 }
 
 function endTurn() {
+  const endTurnBtn = document.getElementById('end-turn-btn');
+  if (endTurnBtn) endTurnBtn.disabled = true;
   socket.emit('end-turn');
 }
 
@@ -125,15 +284,21 @@ function toggleBoardMode() {
   const board2D = document.getElementById('game-board');
   const btn = document.getElementById('view-mode-btn');
 
+  if (typeof Board3D !== 'undefined') {
+    Board3D.enabled = is3DMode;
+  }
+
   if (is3DMode) {
     wrapper3D.classList.remove('hidden');
     board2D.classList.add('hidden');
-    if (btn) btn.textContent = '🌐 Mode: 3D HD';
-    window.dispatchEvent(new Event('resize'));
+    if (btn) btn.textContent = '🌐 3D HD';
+    if (typeof Board3D !== 'undefined' && Board3D.initialized) {
+      Board3D.handleResize();
+    }
   } else {
     wrapper3D.classList.add('hidden');
     board2D.classList.remove('hidden');
-    if (btn) btn.textContent = '🗺️ Mode: 2D Flat';
+    if (btn) btn.textContent = '🗺️ 2D Peta';
   }
 }
 
@@ -151,35 +316,171 @@ function toggle3DLight() {
   }
 }
 
-// Dice result
+function switchMobileTab(tab) {
+  activeMobileTab = tab;
+  document.querySelectorAll('.mobile-nav-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  });
+
+  const layout = document.querySelector('.game-layout');
+  if (layout) {
+    layout.dataset.mobileView = tab;
+  }
+
+  if (tab === 'board' && typeof Board3D !== 'undefined' && Board3D.initialized) {
+    setTimeout(() => Board3D.handleResize(), 50);
+  }
+}
+
+function toggleRulesModal(show) {
+  const modal = document.getElementById('rules-modal');
+  if (!modal) return;
+  modal.classList.toggle('hidden', !show);
+}
+
+function waitMs(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function runTokenMoveWithStop(playerId, fromPos, toPos, playersSnapshot) {
+  if (fromPos === toPos) return;
+  if (typeof Board3D !== 'undefined' && Board3D.initialized && is3DMode) {
+    await Board3D.animatePlayerMove3D(playerId, fromPos, toPos, playersSnapshot, () => {
+      SFX.play('rent');
+    });
+  } else {
+    await animatePlayerMove(playerId, fromPos, toPos, playersSnapshot);
+  }
+  // Keep 2D & 3D synced at the stopped tile and pause briefly so the stop is clearly visible
+  const stoppedPlayers = (playersSnapshot || []).map(p => (p.id === playerId ? { ...p, position: toPos } : p));
+  updatePlayerPositions(stoppedPlayers);
+  await waitMs(280);
+}
+
+function flushPendingLogs() {
+  while (pendingLogs.length > 0) {
+    const entry = pendingLogs.shift();
+    addLogMessage(entry.message, entry.timestamp);
+  }
+}
+
+function presentBuyOptionModal({ playerId, space, canAfford }) {
+  if (playerId && playerId !== myPlayerId) return;
+  const modal = document.getElementById('buy-modal');
+  if (!modal || !space) return;
+
+  const meta = typeof NusantaraLandmarks !== 'undefined'
+    ? NusantaraLandmarks.getMeta(space)
+    : { title: space.name };
+  const artUrl = typeof NusantaraLandmarks !== 'undefined'
+    ? NusantaraLandmarks.getDataUrl(space, 640, 272)
+    : '';
+
+  document.getElementById('buy-modal-title').textContent = `Beli ${space.name}?`;
+  document.getElementById('buy-modal-info').innerHTML = `
+    <div class="buy-deed-preview" style="border-top: 5px solid ${space.color || '#fbbf24'}">
+      ${artUrl ? `<img src="${artUrl}" alt="${meta.title}" class="modal-landmark-art">` : ''}
+      <div class="modal-prop-header">
+        <h4>${space.name}</h4>
+        <span class="modal-landmark-sub">📍 ${meta.title}</span>
+      </div>
+      <div class="modal-stat-grid">
+        <div class="modal-stat-row"><span>Harga Beli</span><strong class="mono-num">Rp${space.price.toLocaleString('id-ID')}rb</strong></div>
+        ${space.rent ? `<div class="modal-stat-row"><span>Sewa Dasar</span><strong class="mono-num">Rp${space.rent}rb</strong></div>` : ''}
+        ${space.houseCost ? `<div class="modal-stat-row"><span>Biaya Rumah</span><strong class="mono-num">Rp${space.houseCost}rb</strong></div>` : ''}
+      </div>
+    </div>
+  `;
+  const confirmBuyBtn = document.getElementById('confirm-buy-btn');
+  if (confirmBuyBtn) {
+    confirmBuyBtn.disabled = canAfford === false;
+  }
+  modal.classList.remove('hidden');
+  SFX.play('buy');
+}
+
+function presentCardDrawnAsync({ playerId, playerName, card, type }) {
+  if (playerId !== myPlayerId) {
+    showToast(`🃏 ${playerName || 'Pemain'}: ${card.text}`, 'info');
+    return waitMs(450);
+  }
+  return new Promise((resolve) => {
+    cardModalCloseResolver = resolve;
+    const modal = document.getElementById('card-modal');
+    document.getElementById('card-type-title').textContent = type === 'chance' ? '❓ Kartu Kesempatan' : '💳 Kartu Dana Umum';
+    document.getElementById('card-text').textContent = card.text;
+    document.getElementById('card-flip').classList.add('flipped');
+    modal.classList.remove('hidden');
+  });
+}
+
+// Dice result — orchestrates Dice Roll -> Token Hop -> Token Stop -> Popups
 socket.on('dice-result', async (data) => {
   const { playerId, dice, moveResult, inJail } = data;
-  
+  isAnimatingTurn = true;
+  syncActionControls();
+  showDiceReadout(dice.d1, dice.d2, true);
+
   const onDiceFinished = async () => {
-    if (moveResult && !inJail) {
-      const player = window.gameState.players.find(p => p.id === playerId);
-      if (player) {
-        const fromPos = (moveResult.newPosition - dice.total + 40) % 40;
-        if (typeof Board3D !== 'undefined' && Board3D.initialized && is3DMode) {
-          await Board3D.animatePlayerMove3D(playerId, fromPos, moveResult.newPosition, window.gameState.players, () => {
-            SFX.play('rent');
-          });
-        } else {
-          await animatePlayerMove(playerId, fromPos, moveResult.newPosition, window.gameState.players);
+    showDiceReadout(dice.d1, dice.d2, false);
+
+    if (moveResult && !inJail && window.gameState) {
+      const fromPos = typeof moveResult.fromPosition === 'number'
+        ? moveResult.fromPosition
+        : (moveResult.newPosition - dice.total + 40) % 40;
+
+      // 1. Move token step-by-step to the rolled tile and wait for it to stop
+      await runTokenMoveWithStop(playerId, fromPos, moveResult.newPosition, window.gameState.players);
+
+      flushPendingLogs();
+
+      // 2. If the tile triggered a Chance/Community card, show card AFTER token stopped on card tile
+      if (pendingCardDrawn && pendingCardDrawn.playerId === playerId) {
+        const cardData = pendingCardDrawn;
+        pendingCardDrawn = null;
+        await presentCardDrawnAsync(cardData);
+      }
+
+      // 3. Check if card or Go-To-Jail moved the player to a second destination tile
+      const latestPlayer = window.gameState
+        ? window.gameState.players.find(p => p.id === playerId)
+        : null;
+      const finalPosition = latestPlayer ? latestPlayer.position : moveResult.newPosition;
+
+      if (finalPosition !== moveResult.newPosition && window.gameState) {
+        await runTokenMoveWithStop(playerId, moveResult.newPosition, finalPosition, window.gameState.players);
+      }
+
+      if (playerId === myPlayerId && typeof showTileInfo === 'function') {
+        showTileInfo(finalPosition, false);
+        if (typeof Board3D !== 'undefined' && Board3D.initialized) {
+          Board3D.selectedTileIndex = finalPosition;
         }
       }
+    } else {
+      await waitMs(250);
+      flushPendingLogs();
     }
-    
-    // Show end turn button or roll button if it's my turn
-    if (playerId === myPlayerId && !inJail) {
-      if (dice.isDouble) {
-        document.getElementById('roll-btn').classList.remove('hidden');
-        document.getElementById('roll-btn').disabled = false;
-        document.getElementById('end-turn-btn').classList.add('hidden');
-      } else {
-        document.getElementById('roll-btn').classList.add('hidden');
-        document.getElementById('end-turn-btn').classList.remove('hidden');
-      }
+
+    // 4. Token has completely stopped: sync board & HUD state
+    isAnimatingTurn = false;
+    if (window.gameState) {
+      applyRoomStateToUI(window.gameState);
+    } else {
+      syncActionControls();
+    }
+
+    // 5. Present any remaining queued Card or Buy Option popup AFTER token stopped
+    if (pendingCardDrawn) {
+      const cardData = pendingCardDrawn;
+      pendingCardDrawn = null;
+      await presentCardDrawnAsync(cardData);
+    }
+
+    if (pendingBuyOption) {
+      const buyData = pendingBuyOption;
+      pendingBuyOption = null;
+      presentBuyOptionModal(buyData);
     }
   };
 
@@ -190,44 +491,43 @@ socket.on('dice-result', async (data) => {
   }
 });
 
-// Buy option
-socket.on('buy-option', ({ propertyId, space }) => {
-  const modal = document.getElementById('buy-modal');
-  document.getElementById('buy-modal-title').textContent = `Beli ${space.name}?`;
-  document.getElementById('buy-modal-info').innerHTML = `
-    <p style="color:${space.color || '#fff'}">■ ${space.name}</p>
-    <p>Harga: <strong>Rp${space.price}rb</strong></p>
-    <p>Sewa dasar: Rp${space.rent}rb</p>
-    ${space.houseCost ? `<p>Harga rumah: Rp${space.houseCost}rb</p>` : ''}
-  `;
-  modal.classList.remove('hidden');
-  SFX.play('buy');
+// Buy option (queued if token is still moving)
+socket.on('buy-option', (payload) => {
+  if (payload.playerId && payload.playerId !== myPlayerId) return;
+  if (isAnimatingTurn) {
+    pendingBuyOption = payload;
+    return;
+  }
+  presentBuyOptionModal(payload);
 });
 
 function buyProperty(buy) {
-  socket.emit('buy-property', { buy });
   document.getElementById('buy-modal').classList.add('hidden');
-  document.getElementById('end-turn-btn').classList.remove('hidden');
+  socket.emit('buy-property', { buy });
 }
 
-// Card drawn
-socket.on('card-drawn', ({ playerId, card, type }) => {
-  if (playerId !== myPlayerId) return;
-  const modal = document.getElementById('card-modal');
-  document.getElementById('card-type-title').textContent = type === 'chance' ? '❓ Kesempatan' : '💳 Dana Umum';
-  document.getElementById('card-text').textContent = card.text;
-  document.getElementById('card-flip').classList.add('flipped');
-  modal.classList.remove('hidden');
+// Card drawn (queued if token is still moving)
+socket.on('card-drawn', (payload) => {
+  if (isAnimatingTurn) {
+    pendingCardDrawn = payload;
+    return;
+  }
+  presentCardDrawnAsync(payload);
 });
 
 function closeCardModal() {
   document.getElementById('card-modal').classList.add('hidden');
   document.getElementById('card-flip').classList.remove('flipped');
+  if (cardModalCloseResolver) {
+    const resolve = cardModalCloseResolver;
+    cardModalCloseResolver = null;
+    resolve();
+  }
 }
 
 // Auction
-socket.on('auction-start', ({ propertyId, space }) => {
-  showAuctionModal(propertyId, space);
+socket.on('auction-start', ({ propertyId, space, auctionState }) => {
+  showAuctionModal(propertyId, space, auctionState);
 });
 
 socket.on('auction-update', (data) => {
@@ -236,9 +536,9 @@ socket.on('auction-update', (data) => {
 
 socket.on('auction-end', (result) => {
   closeAuction();
-  if (result.winner) {
+  if (result.winner && window.gameState) {
     const winner = window.gameState.players.find(p => p.id === result.winner);
-    addLogMessage(`🔨 ${winner ? winner.name : 'Pemain'} memenangkan lelang!`);
+    showToast(`🔨 ${winner ? winner.name : 'Pemain'} memenangkan lelang!`, 'success');
   }
 });
 
@@ -251,40 +551,45 @@ socket.on('trade-proposal', ({ fromId, toId, offer }) => {
 
 socket.on('trade-result', ({ accepted, fromId, toId }) => {
   if (fromId === myPlayerId || toId === myPlayerId) {
-    addLogMessage(accepted ? '🤝 Trade berhasil!' : '❌ Trade ditolak');
+    showToast(accepted ? '🤝 Trade disetujui!' : '❌ Trade ditolak', accepted ? 'success' : 'info');
   }
 });
 
 // Bankrupt
 socket.on('player-bankrupt', ({ playerId }) => {
-  const player = window.gameState.players.find(p => p.id === playerId);
   if (playerId === myPlayerId) {
-    addLogMessage('💀 Kamu bangkrut! Menjadi penonton...');
+    showToast('💀 Kamu bangkrut! Menjadi penonton...', 'error');
   }
   SFX.play('jail');
 });
 
 // Game over
 socket.on('game-over', ({ winnerId }) => {
-  const winner = window.gameState.players.find(p => p.id === winnerId);
+  document.body.dataset.state = 'gameover';
+  clearInterval(turnTimerInterval);
+  const winner = window.gameState ? window.gameState.players.find(p => p.id === winnerId) : null;
   const modal = document.getElementById('gameover-modal');
-  document.getElementById('winner-text').textContent = winnerId === myPlayerId 
-    ? '🎉 Selamat! Kamu menang!' 
-    : `${winner ? winner.name : 'Pemain'} memenangkan permainan!`;
+  document.getElementById('winner-text').textContent = winnerId === myPlayerId
+    ? '🎉 Selamat! Kamu menguasai ekonomi Nusantara!'
+    : `🏆 ${winner ? winner.name : 'Pemain'} memenangkan permainan!`;
   modal.classList.remove('hidden');
   SFX.play('win');
 });
 
-// Chat
+// Chat & Log
 socket.on('chat-message', ({ name, message }) => {
   addChatMessage(name, message);
 });
 
-socket.on('game-log', ({ message }) => {
-  addLogMessage(message);
+socket.on('game-log', ({ message, timestamp }) => {
+  if (isAnimatingTurn) {
+    pendingLogs.push({ message, timestamp });
+    return;
+  }
+  addLogMessage(message, timestamp);
 });
 
-// Build actions
+// Build & Mortgage actions
 function buildHouse(propertyId) {
   socket.emit('build-house', { propertyId });
   SFX.play('buy');
@@ -292,6 +597,11 @@ function buildHouse(propertyId) {
 
 function buildHotel(propertyId) {
   socket.emit('build-hotel', { propertyId });
+  SFX.play('buy');
+}
+
+function sellBuilding(propertyId) {
+  socket.emit('sell-building', { propertyId });
   SFX.play('buy');
 }
 
@@ -307,7 +617,9 @@ function unmortgageProperty(propertyId) {
 function showJailModal(player) {
   const modal = document.getElementById('jail-modal');
   const jailFreeBtn = document.getElementById('jail-free-btn');
-  jailFreeBtn.style.display = player.jailFreeCards > 0 ? 'inline-block' : 'none';
+  if (jailFreeBtn) {
+    jailFreeBtn.style.display = player.jailFreeCards > 0 ? 'inline-flex' : 'none';
+  }
   modal.classList.remove('hidden');
 }
 
