@@ -1,0 +1,38 @@
+{
+  "chance": [
+    { "id": 1, "text": "Maju ke START, terima Rp2jt", "action": "move", "value": 0 },
+    { "id": 2, "text": "Maju ke Jakarta", "action": "move", "value": 16 },
+    { "id": 3, "text": "Maju ke Bandung", "action": "move", "value": 21 },
+    { "id": 4, "text": "Maju ke Bandara terdekat", "action": "move-nearest", "value": "airport" },
+    { "id": 5, "text": "Maju ke Bandara terdekat", "action": "move-nearest", "value": "airport" },
+    { "id": 6, "text": "Maju ke Perusahaan terdekat", "action": "move-nearest", "value": "utility" },
+    { "id": 7, "text": "Terima dividen Rp500rb", "action": "collect", "value": 500 },
+    { "id": 8, "text": "Dapat Kartu Bebas Penjara", "action": "jail-free", "value": 0 },
+    { "id": 9, "text": "Mundur 3 langkah", "action": "move-back", "value": 3 },
+    { "id": 10, "text": "Masuk Penjara! Langsung ke penjara", "action": "jail", "value": 0 },
+    { "id": 11, "text": "Bayar renovasi: Rp250rb/rumah, Rp1jt/hotel", "action": "repair", "value": [250, 1000] },
+    { "id": 12, "text": "Bayar denda Rp150rb", "action": "pay", "value": 150 },
+    { "id": 13, "text": "Maju ke Bandara Soekarno-Hatta", "action": "move", "value": 5 },
+    { "id": 14, "text": "Terpilih jadi ketua RT, bayar Rp100rb per pemain", "action": "pay-each", "value": 100 },
+    { "id": 15, "text": "Pinjaman jatuh tempo, terima Rp1.5jt", "action": "collect", "value": 1500 },
+    { "id": 16, "text": "Menang lomba, terima Rp1jt", "action": "collect", "value": 1000 }
+  ],
+  "community": [
+    { "id": 1, "text": "Maju ke START", "action": "move", "value": 0 },
+    { "id": 2, "text": "Bank error, terima Rp2jt", "action": "collect", "value": 2000 },
+    { "id": 3, "text": "Bayar dokter Rp500rb", "action": "pay", "value": 500 },
+    { "id": 4, "text": "Dapat warisan Rp1jt", "action": "collect", "value": 1000 },
+    { "id": 5, "text": "Bayar asuransi Rp500rb", "action": "pay", "value": 500 },
+    { "id": 6, "text": "Dapat Kartu Bebas Penjara", "action": "jail-free", "value": 0 },
+    { "id": 7, "text": "Ulang tahun! Terima Rp100rb dari setiap pemain", "action": "collect-each", "value": 100 },
+    { "id": 8, "text": "Masuk Penjara!", "action": "jail", "value": 0 },
+    { "id": 9, "text": "Bayar biaya rumah sakit Rp1jt", "action": "pay", "value": 1000 },
+    { "id": 10, "text": "Terima bunga deposito Rp250rb", "action": "collect", "value": 250 },
+    { "id": 11, "text": "Bayar biaya sekolah Rp500rb", "action": "pay", "value": 500 },
+    { "id": 12, "text": "Terima jasa konsultan Rp250rb", "action": "collect", "value": 250 },
+    { "id": 13, "text": "Bayar perbaikan jalan Rp400rb", "action": "pay", "value": 400 },
+    { "id": 14, "text": "Juara olimpiade sains, terima Rp100rb", "action": "collect", "value": 100 },
+    { "id": 15, "text": "Dapat cashback belanja Rp200rb", "action": "collect", "value": 200 },
+    { "id": 16, "text": "Bayar pajak Rp1jt", "action": "pay", "value": 1000 }
+  ]
+}

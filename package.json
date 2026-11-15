@@ -1,0 +1,12 @@
+{
+  "name": "monopoli-nusantara",
+  "version": "1.0.0",
+  "description": "Monopoli Nusantara Online - Multiplayer Board Game",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "socket.io": "^4.7.0"
+  }
+}

@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monopoli Nusantara - Game</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body class="game-page">
+    <!-- Header -->
+    <header class="game-header">
+        <div class="header-left">
+            <h1 class="game-title">🏝️ Monopoli Nusantara</h1>
+        </div>
+        <div class="header-center">
+            <div class="room-info">
+                <span id="room-code-display">NUS-XXX</span>
+            </div>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-tiny btn-mode-toggle" id="view-mode-btn" onclick="toggleBoardMode()">🌐 Mode: 3D HD</button>
+            <div class="turn-info">
+                <span>Giliran:</span>
+                <span id="current-turn-name">-</span>
+                <div class="turn-timer" id="turn-timer">30</div>
+            </div>
+        </div>
+    </header>
+
+    <!-- Main Game Area -->
+    <div class="game-layout">
+        <!-- Left Panel: Players -->
+        <div class="panel panel-left">
+            <h3>Pemain</h3>
+            <div id="players-panel">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Center: Board -->
+        <div class="board-container" id="board-container">
+            <!-- 3D Realistic HD Canvas Wrapper -->
+            <div id="canvas-3d-wrapper" class="canvas-3d-wrapper">
+                <!-- Floating 3D Camera Toolbar -->
+                <div class="camera-toolbar">
+                    <button class="cam-btn active" title="Sudut 3D Miring" onclick="set3DView('3d', this)">🎥 3D</button>
+                    <button class="cam-btn" title="Tampak Atas (Top-Down)" onclick="set3DView('top', this)">🔝 Atas</button>
+                    <button class="cam-btn" title="Fokus Pion Aktif" onclick="set3DView('focus', this)">🎯 Fokus</button>
+                    <button class="cam-btn" title="Sudut Dramatis" onclick="set3DView('corner', this)">📐 Sudut</button>
+                    <button class="cam-btn" title="Ganti Pencahayaan (Siang/Malam)" onclick="toggle3DLight()">🌓 Lampu</button>
+                </div>
+            </div>
+
+            <!-- 2D Board (Hidden by default in 3D mode) -->
+            <div class="board hidden" id="game-board">
+                <!-- 40 tiles rendered by board.js -->
+            </div>
+            
+            <!-- Controls Overlay (Dice roll button & End turn button) -->
+            <div class="board-center-overlay" id="board-center">
+                <div class="dice-container hidden" id="dice-container">
+                    <div class="die" id="die1">?</div>
+                    <div class="die" id="die2">?</div>
+                </div>
+                <button class="btn btn-dice" id="roll-btn" onclick="rollDice()">🎲 Lempar Dadu</button>
+                <button class="btn btn-end-turn hidden" id="end-turn-btn" onclick="endTurn()">⏭️ Akhiri Giliran</button>
+            </div>
+        </div>
+
+        <!-- Right Panel: Actions -->
+        <div class="panel panel-right">
+            <h3>Properti & Aksi</h3>
+            <div id="property-info" class="property-info">
+                <p class="hint">Klik petak di papan untuk melihat detail</p>
+            </div>
+            <div id="action-buttons" class="action-buttons">
+                <!-- Dynamic buttons -->
+            </div>
+            <div id="my-properties" class="my-properties">
+                <h4>Properti Saya</h4>
+                <div id="my-properties-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom: Chat -->
+    <div class="chat-panel">
+        <div class="chat-tabs">
+            <button class="chat-tab active" onclick="switchChatTab('log')">📋 Log</button>
+            <button class="chat-tab" onclick="switchChatTab('chat')">💬 Chat</button>
+        </div>
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Ketik pesan..." autocomplete="off" onkeydown="if(event.key==='Enter')sendChat()">
+            <button class="btn btn-small" onclick="sendChat()">Kirim</button>
+            <div class="emoji-bar">
+                <span onclick="sendEmoji('👍')">👍</span>
+                <span onclick="sendEmoji('😂')">😂</span>
+                <span onclick="sendEmoji('😡')">😡</span>
+                <span onclick="sendEmoji('🎉')">🎉</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Overlays -->
+    <div class="modal-overlay hidden" id="buy-modal">
+        <div class="modal">
+            <h3 id="buy-modal-title">Beli Properti?</h3>
+            <div id="buy-modal-info"></div>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" onclick="buyProperty(true)">💰 Beli</button>
+                <button class="btn btn-secondary" onclick="buyProperty(false)">❌ Lewati (Lelang)</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="card-modal">
+        <div class="modal card-modal">
+            <div class="card-flip" id="card-flip">
+                <div class="card-front">❓</div>
+                <div class="card-back">
+                    <h3 id="card-type-title">Kesempatan</h3>
+                    <p id="card-text"></p>
+                </div>
+            </div>
+            <button class="btn btn-primary" onclick="closeCardModal()">OK</button>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="auction-modal">
+        <div class="modal">
+            <h3>🔨 Lelang</h3>
+            <div id="auction-info"></div>
+            <div class="auction-controls">
+                <div class="bid-display">
+                    <span>Bid tertinggi:</span>
+                    <span id="current-bid">Rp0</span>
+                    <span>oleh <span id="current-bidder">-</span></span>
+                </div>
+                <div class="bid-input-group">
+                    <input type="number" id="bid-amount" step="100" min="100" placeholder="Jumlah bid">
+                    <button class="btn btn-primary" onclick="placeBid()">Bid!</button>
+                    <button class="btn btn-secondary" onclick="passAuction()">Pass</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="trade-modal">
+        <div class="modal modal-large">
+            <h3>🤝 Trade</h3>
+            <div class="trade-layout">
+                <div class="trade-side">
+                    <h4>Saya Tawarkan</h4>
+                    <div id="trade-my-props"></div>
+                    <label>Uang: <input type="number" id="trade-my-money" value="0" step="100" min="0"></label>
+                </div>
+                <div class="trade-arrow">⇄</div>
+                <div class="trade-side">
+                    <h4>Saya Minta</h4>
+                    <div id="trade-their-props"></div>
+                    <label>Uang: <input type="number" id="trade-their-money" value="0" step="100" min="0"></label>
+                </div>
+            </div>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" onclick="sendTrade()">Kirim Tawaran</button>
+                <button class="btn btn-secondary" onclick="closeTrade()">Batal</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="trade-receive-modal">
+        <div class="modal">
+            <h3>🤝 Tawaran Trade</h3>
+            <div id="trade-receive-info"></div>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" onclick="respondTrade(true)">✅ Terima</button>
+                <button class="btn btn-secondary" onclick="respondTrade(false)">❌ Tolak</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="jail-modal">
+        <div class="modal">
+            <h3>🔒 Kamu di Penjara!</h3>
+            <p>Pilih cara keluar:</p>
+            <div class="modal-buttons">
+                <button class="btn btn-primary" onclick="payJail()">💰 Bayar Rp500rb</button>
+                <button class="btn btn-secondary" id="jail-free-btn" onclick="useJailFree()" style="display:none">🃏 Kartu Bebas</button>
+                <button class="btn btn-secondary" onclick="closeJailModal()">🎲 Coba Lempar Double</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay hidden" id="gameover-modal">
+        <div class="modal">
+            <h2>🏆 Game Over!</h2>
+            <p id="winner-text"></p>
+            <div class="confetti" id="confetti"></div>
+            <button class="btn btn-primary" onclick="window.location.href='/'">🏠 Kembali</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+    <script src="js/libs/three.min.js"></script>
+    <script src="js/libs/OrbitControls.js"></script>
+    <script src="js/board3d.js"></script>
+    <script src="js/board.js"></script>
+    <script src="js/dice.js"></script>
+    <script src="js/auction.js"></script>
+    <script src="js/trade.js"></script>
+    <script src="js/chat.js"></script>
+    <script src="js/sound.js"></script>
+    <script src="js/game.js"></script>
+</body>
+</html>
